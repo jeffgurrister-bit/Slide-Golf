@@ -1,0 +1,8 @@
+{
+  "name": "Slide Golf League Tracker",
+  "short_name": "Slide Golf",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a1a0a",
+  "theme_color": "#0a1a0a"
+}
