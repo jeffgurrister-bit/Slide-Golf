@@ -121,12 +121,10 @@ export default function App(){
   // ─── MERGE LIVE SCORES FROM OTHER PLAYERS ──────────────
   useEffect(()=>{
     if(!liveData||!me)return;
-    // Add any new remote players to roundPlayers
     setRoundPlayers(prev=>{
       const all=new Set([...prev,...liveData.players]);
       return[...all];
     });
-    // Merge other players' scores into local state
     setAllScores(prev=>{
       const m={...prev};
       liveData.players.forEach(p=>{
@@ -155,15 +153,31 @@ export default function App(){
   async function goLive(){
     if(!selCourse||!me)return;
     const code=genLiveCode();
+    const playersArr = [me,...roundPlayers.filter(p=>p!==me)];
+    const scoresObj = {};
+    const holeOutsObj = {};
+    playersArr.forEach(p => {
+      scoresObj[p] = allScores[p] || Array(18).fill(null);
+      holeOutsObj[p] = 0;
+    });
     const ref=await addDoc(collection(db,"liveRounds"),{
-      code,host:me,courseName:selCourse.name,courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,pga:selCourse.pga||false,tournament:selCourse.tournament||""},
-      players:[me,...roundPlayers.filter(p=>p!==me)],status:"playing",
-      scores:{[me]:allScores[me]||Array(18).fill(null),...Object.fromEntries(roundPlayers.filter(p=>p!==me).map(p=>[p,allScores[p]||Array(18).fill(null)]))},
-      holeOuts:{[me]:0,...Object.fromEntries(roundPlayers.filter(p=>p!==me).map(p=>[p,0]))},
-      hideScores,useHdcp,hdcps,activeTourney,createdAt:Date.now()
+      code,
+      host:me,
+      courseName:selCourse.name,
+      courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,pga:selCourse.pga||false,tournament:selCourse.tournament||""},
+      players:playersArr,
+      status:"playing",
+      scores:scoresObj,
+      holeOuts:holeOutsObj,
+      hideScores:hideScores,
+      useHdcp:useHdcp,
+      hdcps:hdcps,
+      activeTourney:activeTourney||null,
+      createdAt:Date.now()
     });
     setLiveId(ref.id);
   }
+
   async function joinLive(){
     const code=joinInput.trim().toUpperCase();if(!code)return;
     try{
@@ -173,8 +187,10 @@ export default function App(){
       const d=snap.docs[0];const data=d.data();
       if(data.status==="finished"){alert("That round is already finished!");return;}
       const pls=[...data.players];if(!pls.includes(me))pls.push(me);
-      const scores={...data.scores,[me]:data.scores[me]||Array(18).fill(null)};
-      const holeOuts={...data.holeOuts,[me]:data.holeOuts[me]||0};
+      const scores={...data.scores};
+      if(!scores[me])scores[me]=Array(18).fill(null);
+      const holeOuts={...data.holeOuts};
+      if(holeOuts[me]===undefined)holeOuts[me]=0;
       await updateDoc(doc(db,"liveRounds",d.id),{players:pls,scores,holeOuts});
       setLiveId(d.id);
       setSelCourse(data.courseData);setActiveTourney(data.activeTourney||null);
@@ -184,12 +200,14 @@ export default function App(){
       setPlayMode("setup");setTab("play");setShowJoin(false);setJoinInput("");
     }catch(e){alert("Error joining: "+e.message);}
   }
+
   async function leaveLive(){
     if(liveId&&liveData&&liveData.host===me){
       try{await updateDoc(doc(db,"liveRounds",liveId),{status:"finished"});}catch(e){}
     }
     setLiveId(null);setLiveData(null);
   }
+
   async function syncMyScores(){
     if(!liveId||!me)return;
     try{
@@ -197,7 +215,10 @@ export default function App(){
       if(!snap.exists())return;const d=snap.data();
       const sc=allScores[me]||Array(18).fill(null);
       const ho=(allShotLogs[me]||[]).filter(shots=>shots.some(s=>s.type==="holeout")).length;
-      await updateDoc(ref,{scores:{...d.scores,[me]:sc},holeOuts:{...d.holeOuts,[me]:ho}});
+      await updateDoc(ref,{
+        [`scores.${me}`]:sc,
+        [`holeOuts.${me}`]:ho
+      });
     }catch(e){}
   }
 
@@ -262,7 +283,6 @@ export default function App(){
       const sc=allScores[p]||Array(18).fill(null);const total=sc.reduce((s,v)=>s+(v||0),0);
       const ho=(allShotLogs[p]||[]).filter(shots=>shots.some(s=>s.type==="holeout")).length;
       const hd=useHdcp?(hdcps[p]||null):null;
-      // Only save rounds for players on this device (me + local players)
       if(p===me||!isLive){
         await saveRoundToDB({player:p,course:selCourse.name,courseLevel:selCourse.level,date:new Date().toISOString().split("T")[0],scores:sc,total,par:totalPar,holesPlayed:sc.filter(v=>v!==null).length,diff:total-totalPar,holeOuts:ho,hidden:hideScores,hdcp:hd,adjTotal:hd?total-hd:null});
         if(activeTourney){
@@ -275,7 +295,6 @@ export default function App(){
         }
       }
     }
-    // Sync final scores and end live round
     if(isLive){await syncMyScores();}
     if(activeTourney){setActiveTourney(null);setShowTourney(true);setTab("home");}
     else setTab("leaderboard");
@@ -306,12 +325,44 @@ export default function App(){
   const tBoard=tJoined.map(p=>{const rnds=curTE.filter(e=>e.player===p&&e.round>0).sort((a,b)=>a.round-b.round);const tot=rnds.reduce((s,r)=>s+r.total,0);const par=rnds.reduce((s,r)=>s+r.par,0);const joinE=curTE.find(e=>e.player===p&&e.round===0);const hd=joinE?.hdcp||null;const adjTot=hd?rnds.reduce((s,r)=>s+(r.total-hd),0):null;const rScores={};rnds.forEach(r=>{rScores[r.round]={total:r.total,par:r.par};});return{player:p,rnds,tot,par,played:rnds.length,hd,adjTot,rScores};}).filter(p=>p.played>0).sort((a,b)=>tShowAdj&&a.adjTot!=null&&b.adjTot!=null?(a.adjTot-b.adjTot):((a.tot-a.par)-(b.tot-b.par)));
   const tPar=pgaThisWeek?pgaThisWeek.holes.reduce((s,h)=>s+h.par,0):72;
 
-  // ─── LIVE ROUND BADGE ──────────────────────────────────
   const LiveBadge=()=>isLive?<div style={{background:"rgba(239,68,68,0.15)",border:"1px solid rgba(239,68,68,0.4)",borderRadius:8,padding:"6px 10px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-    <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:8,height:8,borderRadius:4,background:C.red,animation:"pulse 1.5s infinite"}}/>
-    <span style={{fontSize:12,fontWeight:700,color:C.red}}>LIVE</span><span style={{fontSize:12,color:C.text,fontWeight:700,letterSpacing:2}}>{liveData.code}</span></div>
+    <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:8,height:8,borderRadius:4,background:C.red,animation:"pulse 1.5s infinite"}}/><span style={{fontSize:12,fontWeight:700,color:C.red}}>LIVE</span><span style={{fontSize:12,color:C.text,fontWeight:700,letterSpacing:2}}>{liveData.code}</span></div>
     <div style={{fontSize:10,color:C.muted}}>{liveData.players.length} player{liveData.players.length!==1?"s":""}</div>
   </div>:null;
+
+  // ─── SCORECARD COMPONENT ───────────────────────────────
+  const ScorecardView = () => (
+    <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.greenLt}`,overflow:"hidden"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:C.accent}}><span style={{fontWeight:700,fontSize:13}}>📋 Scorecard</span><button onClick={()=>setShowScorecard(false)} style={{background:"transparent",border:"none",color:C.text,cursor:"pointer",fontSize:14}}>✕</button></div>
+      <div style={{overflowX:"auto",padding:6}}>
+        {[0,9].map(start=>(
+          <table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:9,marginBottom:start===0?4:0,minWidth:420}}>
+            <thead><tr style={{background:C.accent}}>
+              <th style={{padding:"3px 4px",textAlign:"left",minWidth:40}}>HOLE</th>
+              {selCourse.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"3px 1px",textAlign:"center",minWidth:24,background:h.num-1===curHole?"rgba(74,170,74,0.3)":"transparent"}}>{h.num}</th>)}
+              <th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>{start===0?"OUT":"IN"}</th>
+              {start===9&&<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>TOT</th>}
+            </tr></thead>
+            <tbody>
+              <tr style={{background:C.card2}}><td style={{padding:"2px 4px",fontWeight:600,color:C.greenLt,fontSize:8}}>RNG</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,0,18)}</td>}</tr>
+              <tr><td style={{padding:"2px 4px",fontWeight:600,fontSize:9}}>PAR</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",padding:"2px 1px"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{selCourse.holes.reduce((s,h)=>s+h.par,0)}</td>}</tr>
+              {!hideScores&&roundPlayers.map(p=>{
+                const sc=allScores[p]||Array(18).fill(null);
+                return(<tr key={p} style={{borderTop:`1px solid ${C.border}`}}>
+                  <td style={{padding:"2px 4px",fontWeight:600,fontSize:8}}>{p}{isLive&&p!==me?<span style={{color:C.blue,fontSize:7}}> 📡</span>:""}</td>
+                  {selCourse.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const v=sc[idx];const un=v!==null&&v<h.par;const ov=v!==null&&v>h.par;
+                    return <td key={h.num} style={{textAlign:"center",fontSize:9,fontWeight:700,color:un?C.greenLt:ov?"#ff6b6b":v!==null?C.text:C.muted,background:h.num-1===curHole?"rgba(74,170,74,0.1)":"transparent"}}>{v??"-"}</td>;
+                  })}
+                  <td style={{textAlign:"center",fontWeight:700,fontSize:9}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>
+                  {start===9&&<td style={{textAlign:"center",fontWeight:700,fontSize:9,color:C.greenLt}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}
+                </tr>);
+              })}
+            </tbody>
+          </table>
+        ))}
+      </div>
+    </div>
+  );
 
   return(
     <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Segoe UI',system-ui,sans-serif",color:C.text}}>
@@ -333,7 +384,6 @@ export default function App(){
         {tab==="home"&&!showTourney&&(<div style={{display:"flex",flexDirection:"column",gap:14}}>
           <div style={{textAlign:"center",padding:"20px 0"}}><div style={{fontSize:26,fontWeight:700,letterSpacing:3,textTransform:"uppercase"}}>Slide Golf</div><div style={{color:C.muted,marginTop:4,fontSize:13}}>League Scorecard & Tracker</div></div>
           <button onClick={()=>setTab("play")} style={{...btnS(true),padding:16,fontSize:16,width:"100%"}}>⛳ Start New Round</button>
-          {/* ─── JOIN LIVE ROUND ─────────────────────── */}
           <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
             {!showJoin?(<button onClick={()=>setShowJoin(true)} style={{...btnS(false),width:"100%",padding:12,fontSize:14,background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.3)",color:C.red}}>📡 Join Live Round</button>
             ):(<div style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -432,7 +482,6 @@ export default function App(){
               {!isLive&&<div style={{display:"flex",flexWrap:"wrap",gap:4}}>{playerNames.filter(n=>!roundPlayers.includes(n)).map(n=>(<button key={n} onClick={()=>addToRound(n)} style={{background:C.card2,border:`1px solid ${C.border}`,color:C.text,padding:"6px 12px",borderRadius:8,fontSize:12,cursor:"pointer"}}>{n}</button>))}</div>}
             </div>
             {useHdcp&&roundPlayers.length>0&&(<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8,fontSize:13}}>Handicap Course Par</div>{roundPlayers.map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderBottom:`1px solid ${C.border}`}}><span style={{fontSize:12,fontWeight:600}}>{p}</span><input value={hdcps[p]||""} onChange={e=>setHdcps(h=>({...h,[p]:parseInt(e.target.value)||0}))} placeholder="72" style={{...smallInput,width:50}}/></div>))}</div>)}
-            {/* ─── GO LIVE BUTTON ─────────────────────── */}
             {!isLive&&roundPlayers.length>0&&(
               <button onClick={goLive} style={{...btnS(false),width:"100%",padding:12,fontSize:14,background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.3)",color:C.red}}>📡 Go Live — Share with Friends</button>
             )}
@@ -449,35 +498,117 @@ export default function App(){
 
           {/* ═══ SHOT-BY-SHOT ═══ */}
           {selCourse&&playMode==="holes"&&curHD&&curHS&&(<>
-            {showScorecard&&(<div style={{background:C.card,borderRadius:12,border:`1px solid ${C.greenLt}`,overflow:"hidden"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:C.accent}}><span style={{fontWeight:700,fontSize:13}}>📋 Scorecard</span><button onClick={()=>setShowScorecard(false)} style={{background:"transparent",border:"none",color:C.text,cursor:"pointer",fontSize:14}}>✕</button></div>
-              <div style={{overflowX:"auto",padding:6}}>
-                {[0,9].map(start=>(
-                  <table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:9,marginBottom:start===0?4:0,minWidth:420}}>
-                    <thead><tr style={{background:C.accent}}>
-                      <th style={{padding:"3px 4px",textAlign:"left",minWidth:40}}>HOLE</th>
-                      {selCourse.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"3px 1px",textAlign:"center",minWidth:24,background:h.num-1===curHole?"rgba(74,170,74,0.3)":"transparent"}}>{h.num}</th>)}
-                      <th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>{start===0?"OUT":"IN"}</th>
-                      {start===9&&<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>TOT</th>}
-                    </tr></thead>
-                    <tbody>
-                      <tr style={{background:C.card2}}><td style={{padding:"2px 4px",fontWeight:600,color:C.greenLt,fontSize:8}}>RNG</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,0,18)}</td>}</tr>
-                      <tr><td style={{padding:"2px 4px",fontWeight:600,fontSize:9}}>PAR</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",padding:"2px 1px"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{selCourse.holes.reduce((s,h)=>s+h.par,0)}</td>}</tr>
-                      {!hideScores&&roundPlayers.map(p=>{
-                        const sc=allScores[p]||Array(18).fill(null);
-                        return(<tr key={p} style={{borderTop:`1px solid ${C.border}`}}>
-                          <td style={{padding:"2px 4px",fontWeight:600,fontSize:8}}>{p}{isLive&&p!==me?<span style={{color:C.blue,fontSize:7}}> 📡</span>:""}</td>
-                          {selCourse.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const v=sc[idx];const un=v!==null&&v<h.par;const ov=v!==null&&v>h.par;
-                            return <td key={h.num} style={{textAlign:"center",fontSize:9,fontWeight:700,color:un?C.greenLt:ov?"#ff6b6b":v!==null?C.text:C.muted,background:h.num-1===curHole?"rgba(74,170,74,0.1)":"transparent"}}>{v??"-"}</td>;
-                          })}
-                          <td style={{textAlign:"center",fontWeight:700,fontSize:9}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>
-                          {start===9&&<td style={{textAlign:"center",fontWeight:700,fontSize:9,color:C.greenLt}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}
-                        </tr>);
-                      })}
-                    </tbody>
-                  </table>
-                ))}
-              </div>
-            </div>)}
+            {showScorecard&&<ScorecardView/>}
             <LiveBadge/>
-            {activeTourney&&(<div style={{background:"linear-gradient(135deg,#1a2a4,#2a3a5a)"
+            {activeTourney&&(<div style={{background:"linear-gradient(135deg,#1a2a4a,#2a3a5a)",borderRadius:10,padding:8,border:"1px solid #3a5a8a",textAlign:"center"}}><div style={{fontSize:10,color:C.blue}}>🏌️ {activeTourney.tournament} · R{activeTourney.round}</div></div>)}
+            <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div><div style={{fontSize:11,color:C.muted}}>HOLE {curHole+1} of 18</div><div style={{fontSize:20,fontWeight:700}}>Par {curHD.par} <span style={{fontSize:13,color:C.muted,fontWeight:400}}>Range: {fmtR(curHD.range)}</span></div></div>
+                <button onClick={()=>setShowScorecard(s=>!s)} style={{...btnS(false),padding:"4px 8px",fontSize:10}}>📋</button>
+              </div>
+              {/* Player tabs */}
+              {roundPlayers.length>1&&(<div style={{display:"flex",gap:4,marginBottom:8,overflowX:"auto"}}>{roundPlayers.map((p,i)=>{const ps=holeState[p];return(<button key={p} onClick={()=>setCurPlayerIdx(i)} style={{padding:"6px 10px",borderRadius:8,border:i===curPlayerIdx?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:i===curPlayerIdx?C.accent:ps?.done?"rgba(74,170,74,0.08)":C.card2,color:i===curPlayerIdx?C.white:ps?.done?C.greenLt:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{p} {ps?.done?"✓":""}</button>);})}</div>)}
+              {/* Current player state */}
+              <div style={{background:C.card2,borderRadius:8,padding:12,marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{fontWeight:700,fontSize:14}}>{curPlayer}</div>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    {!hideScores&&(()=>{const r=getRunningScore(curPlayer);const d=r.total-r.par;return<span style={{fontSize:11,color:d<0?C.greenLt:d>0?C.red:C.muted,fontWeight:700}}>Thru: {r.total} ({d===0?"E":d>0?`+${d}`:d})</span>;})()}
+                  </div>
+                </div>
+                {curHS.done?(<div style={{textAlign:"center",padding:"12px 0"}}>{(()=>{const sn=scoreName(curHS.score,curHD.par);return<><div style={{fontSize:24,fontWeight:700,color:sn.c}}>{curHS.score} {sn.e}</div><div style={{fontSize:13,color:sn.c}}>{sn.l}</div></>;})()}</div>
+                ):(<>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"8px 0"}}><span style={{fontSize:12,color:C.muted}}>Total: <strong style={{color:C.text,fontSize:16}}>{curHS.total}</strong> / {curHD.range[0]}-{curHD.range[1]}</span>{curHS.onGreen&&<span style={{background:"rgba(74,170,74,0.2)",color:C.greenLt,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600}}>ON GREEN</span>}</div>
+                  {/* Shot log */}
+                  {curHS.shots.length>0&&(<div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>{curHS.shots.map((s,i)=>(<span key={i} style={{background:s.type==="OB"?"rgba(239,68,68,0.2)":s.type==="putt"?"rgba(138,180,248,0.2)":"rgba(74,170,74,0.2)",color:s.type==="OB"?C.red:s.type==="putt"?C.blue:C.greenLt,padding:"2px 6px",borderRadius:4,fontSize:10}}>{s.type==="OB"?"OB":s.type==="putt"?`Putt: ${s.val}`:`${s.dir==="sub"?"-":"+"}${s.val}`}</span>))}</div>)}
+                  {/* Controls */}
+                  {!curHS.onGreen?(<>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:4,marginBottom:6}}>{[1,2,3,4,5,6,7,8,9,10].map(v=>(<button key={v} onClick={()=>recordShot(curPlayer,String(v))} style={{padding:"10px 0",borderRadius:6,border:`1px solid ${C.border}`,background:C.card,color:C.text,cursor:"pointer",fontSize:14,fontWeight:600}}>{curHS.total>curHD.range[1]?`-${v}`:v}</button>))}</div>
+                    <div style={{display:"flex",gap:4}}><button onClick={()=>recordShot(curPlayer,"OB")} style={{flex:1,padding:10,borderRadius:6,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:C.red,cursor:"pointer",fontWeight:600,fontSize:12}}>OB</button><button onClick={()=>recordShot(curPlayer,"HOLEOUT")} style={{flex:1,padding:10,borderRadius:6,border:`1px solid ${C.gold}`,background:"rgba(212,184,74,0.1)",color:C.gold,cursor:"pointer",fontWeight:600,fontSize:12}}>🏌️ Hole Out!</button></div>
+                  </>):(<>
+                    <div style={{display:"flex",gap:8}}><button onClick={()=>recordShot(curPlayer,"MISS")} style={{flex:1,padding:14,borderRadius:8,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:C.red,cursor:"pointer",fontWeight:700,fontSize:16}}>Miss</button><button onClick={()=>recordShot(curPlayer,"MADE")} style={{flex:1,padding:14,borderRadius:8,border:`1px solid ${C.greenLt}`,background:"rgba(74,170,74,0.15)",color:C.greenLt,cursor:"pointer",fontWeight:700,fontSize:16}}>Made ✓</button></div>
+                    <div style={{textAlign:"center",fontSize:11,color:C.muted,marginTop:4}}>Putts: {curHS.putts}</div>
+                  </>)}
+                  <button onClick={()=>undoShot(curPlayer)} disabled={!curHS.shots.length} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.muted,cursor:curHS.shots.length?"pointer":"default",fontSize:11,opacity:curHS.shots.length?1:0.3}}>↩ Undo</button>
+                </>)}
+              </div>
+            </div>
+            {/* Navigation */}
+            <div style={{display:"flex",gap:8}}>
+              {curHole>0&&<button onClick={()=>{setCurHole(curHole-1);initHole();}} style={{...btnS(false),padding:"10px 16px",fontSize:12}}>← Prev</button>}
+              <button onClick={finishHole} style={{...btnS(true),flex:1,padding:14,fontSize:15}}>{curHole<17?`Finish Hole ${curHole+1} →`:"Finish Round"}</button>
+            </div>
+          </>)}
+
+          {/* ═══ QUICK SCORE ═══ */}
+          {selCourse&&playMode==="quick"&&(<>
+            <LiveBadge/>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{margin:0,fontSize:16}}>Quick Score — {selCourse.name}</h2><button onClick={()=>setPlayMode("setup")} style={{...btnS(false),padding:"4px 10px",fontSize:11}}>← Back</button></div>
+            <div style={{display:"flex",gap:4,marginBottom:4}}><button onClick={()=>setNine(0)} style={{flex:1,padding:8,borderRadius:8,border:nine===0?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:nine===0?C.accent:C.card,color:nine===0?C.white:C.muted,cursor:"pointer",fontSize:12,fontWeight:600}}>Front 9</button><button onClick={()=>setNine(1)} style={{flex:1,padding:8,borderRadius:8,border:nine===1?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:nine===1?C.accent:C.card,color:nine===1?C.white:C.muted,cursor:"pointer",fontSize:12,fontWeight:600}}>Back 9</button></div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:420}}>
+                <thead><tr style={{background:C.accent}}><th style={{padding:"4px 6px",textAlign:"left",minWidth:50}}>HOLE</th>{selCourse.holes.slice(nine*9,nine*9+9).map(h=><th key={h.num} style={{padding:"4px 2px",textAlign:"center",minWidth:30}}>{h.num}</th>)}<th style={{padding:"4px 4px",textAlign:"center",minWidth:35}}>{nine===0?"OUT":"IN"}</th></tr></thead>
+                <tbody>
+                  <tr style={{background:C.card2}}><td style={{padding:"3px 6px",fontWeight:600,color:C.greenLt,fontSize:9}}>RANGE</td>{selCourse.holes.slice(nine*9,nine*9+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:8,color:C.muted}}>{fmtR(h.range)}</td>)}<td/></tr>
+                  <tr><td style={{padding:"3px 6px",fontWeight:600}}>PAR</td>{selCourse.holes.slice(nine*9,nine*9+9).map(h=><td key={h.num} style={{textAlign:"center"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,nine*9,nine*9+9)}</td></tr>
+                  {roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);return(<tr key={p} style={{borderTop:`1px solid ${C.border}`}}><td style={{padding:"3px 6px",fontWeight:600,fontSize:9}}>{p}</td>{selCourse.holes.slice(nine*9,nine*9+9).map((h,i)=>{const idx=nine*9+i;return<td key={h.num} style={{padding:"2px"}}><input value={sc[idx]??"" } onChange={e=>setQuickScore(p,idx,e.target.value)} style={{...smallInput,width:"100%",fontSize:11,color:sc[idx]!=null&&sc[idx]<h.par?C.greenLt:sc[idx]!=null&&sc[idx]>h.par?C.red:C.text}}/></td>;})} <td style={{textAlign:"center",fontWeight:700,fontSize:10}}>{sc.slice(nine*9,nine*9+9).reduce((s,v)=>s+(v||0),0)||"-"}</td></tr>);})}
+                </tbody>
+              </table>
+            </div>
+            {roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);const tot=sc.reduce((s,v)=>s+(v||0),0);const par=selCourse.holes.reduce((s,h)=>s+h.par,0);return tot>0&&<div key={p} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}><span style={{fontWeight:600}}>{p}</span><span><strong>{tot}</strong> <RelPar s={tot} p={par}/></span></div>;})}
+            <button onClick={()=>setPlayMode("review")} style={{...btnS(true),width:"100%",padding:14,fontSize:15,marginTop:8}}>Review & Save</button>
+          </>)}
+
+          {/* ═══ REVIEW ═══ */}
+          {selCourse&&playMode==="review"&&(<>
+            <h2 style={{margin:0,fontSize:18}}>📋 Round Review</h2>
+            <div style={{background:C.card,borderRadius:12,padding:12,border:`1px solid ${C.border}`,overflowX:"auto"}}>
+              {[0,9].map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:9,marginBottom:start===0?6:0,minWidth:420}}>
+                <thead><tr style={{background:C.accent}}><th style={{padding:"4px 6px",textAlign:"left",minWidth:50}}>HOLE</th>{selCourse.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"3px 2px",textAlign:"center",minWidth:24}}>{h.num}</th>)}<th style={{padding:"3px 4px",textAlign:"center",minWidth:30}}>{start===0?"OUT":"IN"}</th>{start===9&&<th style={{padding:"3px 4px",textAlign:"center",minWidth:30}}>TOT</th>}</tr></thead>
+                <tbody>
+                  <tr><td style={{padding:"2px 6px",fontWeight:600}}>PAR</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{selCourse.holes.reduce((s,h)=>s+h.par,0)}</td>}</tr>
+                  {roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);return(<tr key={p} style={{borderTop:`1px solid ${C.border}`}}><td style={{padding:"2px 6px",fontWeight:600,fontSize:8}}>{p}</td>{selCourse.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const v=sc[idx];const un=v!=null&&v<h.par;const ov=v!=null&&v>h.par;return<td key={h.num} style={{textAlign:"center",fontWeight:700,color:un?C.greenLt:ov?"#ff6b6b":v!=null?C.text:C.muted}}>{v??"-"}</td>;})}<td style={{textAlign:"center",fontWeight:700}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}</tr>);})}
+                </tbody>
+              </table>))}
+            </div>
+            {roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);const tot=sc.reduce((s,v)=>s+(v||0),0);const par=selCourse.holes.reduce((s,h)=>s+h.par,0);const ho=(allShotLogs[p]||[]).filter(shots=>shots.some(s=>s.type==="holeout")).length;return(<div key={p} style={{background:C.card,borderRadius:8,padding:10,border:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700}}>{p}</div>{useHdcp&&hdcps[p]&&<div style={{fontSize:10,color:C.blue}}>HDCP: {hdcps[p]} · Adj: {tot-hdcps[p]}</div>}</div><div style={{textAlign:"right"}}><div style={{fontSize:20,fontWeight:700}}>{tot} <RelPar s={tot} p={par}/></div>{ho>0&&<div style={{fontSize:10,color:C.gold}}>🏌️ {ho} hole-out{ho>1?"s":""}</div>}</div></div>);})}
+            <div style={{display:"flex",gap:8}}><button onClick={()=>setPlayMode("setup")} style={{...btnS(false),padding:12}}>← Edit</button><button onClick={saveRound} style={{...btnS(true),flex:1,padding:14,fontSize:15}}>💾 Save Round</button></div>
+          </>)}
+        </div>)}
+
+        {/* ═══ LEADERBOARD ═══ */}
+        {tab==="leaderboard"&&(<div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <h2 style={{margin:0,fontSize:18}}>📊 Leaderboard</h2>
+          <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}>
+            <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:400}}><thead><tr style={{background:C.accent}}><th style={{padding:"8px 6px",textAlign:"left"}}>#</th><th style={{padding:"8px 4px",textAlign:"left"}}>Player</th><th style={{padding:"8px 4px",textAlign:"center"}}>HDCP</th><th style={{padding:"8px 4px",textAlign:"center"}}>Rnds</th><th style={{padding:"8px 4px",textAlign:"center"}}>Best</th><th style={{padding:"8px 4px",textAlign:"center"}}>Avg</th><th style={{padding:"8px 4px",textAlign:"center"}}>🏌️</th></tr></thead><tbody>{playerStats.map((p,i)=>(<tr key={p.name} style={{borderTop:`1px solid ${C.border}`,background:p.name===me?"rgba(74,170,74,0.06)":"transparent"}}><td style={{padding:"8px 6px",fontWeight:700,color:i===0?C.gold:i<3?C.greenLt:C.muted}}>{i+1}</td><td style={{padding:"8px 4px",fontWeight:600}}>{p.name}</td><td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:p.handicap!=null&&p.handicap<0?C.greenLt:p.handicap!=null&&p.handicap>0?C.red:C.text}}>{p.handicap!=null?p.handicap:"-"}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.muted}}>{p.rounds}</td><td style={{padding:"8px 4px",textAlign:"center"}}>{p.best??"-"}</td><td style={{padding:"8px 4px",textAlign:"center"}}>{p.avg??"-"}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.gold}}>{p.holeOuts||0}</td></tr>))}</tbody></table></div>
+          </div>
+          <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+            <div style={{fontWeight:600,marginBottom:8}}>All Rounds</div>
+            {rounds.map(r=>(<div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:12}}>
+              <div><span style={{fontWeight:600}}>{r.player}</span><span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.course}</span><span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.date}</span></div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>{r.hidden?<span style={{color:C.muted,fontSize:11}}>🙈</span>:<><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></>}{(r.holeOuts||0)>0&&<span style={{fontSize:10,color:C.gold}}>🏌️{r.holeOuts}</span>}<button onClick={()=>{if(confirm(`Delete ${r.player}'s round?`))deleteRoundFromDB(r.id);}} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:10,opacity:0.5}}>🗑</button></div>
+            </div>))}
+          </div>
+        </div>)}
+
+        {/* ═══ STATS ═══ */}
+        {tab==="stats"&&(<div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <h2 style={{margin:0,fontSize:18}}>📈 Stats</h2>
+          {playerStats.map(p=>{const pr=rounds.filter(r=>r.player===p.name&&r.holesPlayed===18);if(!pr.length)return null;const courseCounts={};pr.forEach(r=>{courseCounts[r.course]=(courseCounts[r.course]||0)+1;});return(<div key={p.name} style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>{p.name}</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
+              <div style={{textAlign:"center"}}><div style={{fontSize:18,fontWeight:700,color:C.greenLt}}>{p.handicap!=null?p.handicap:"-"}</div><div style={{fontSize:9,color:C.muted}}>HDCP</div></div>
+              <div style={{textAlign:"center"}}><div style={{fontSize:18,fontWeight:700}}>{p.best??"-"}</div><div style={{fontSize:9,color:C.muted}}>Best</div></div>
+              <div style={{textAlign:"center"}}><div style={{fontSize:18,fontWeight:700}}>{p.avg??"-"}</div><div style={{fontSize:9,color:C.muted}}>Avg</div></div>
+              <div style={{textAlign:"center"}}><div style={{fontSize:18,fontWeight:700,color:C.gold}}>{p.holeOuts}</div><div style={{fontSize:9,color:C.muted}}>Hole-Outs</div></div>
+            </div>
+            <div style={{fontSize:11,color:C.muted}}>{p.rounds} round{p.rounds!==1?"s":""}</div>
+            <div style={{marginTop:6,display:"flex",flexWrap:"wrap",gap:4}}>{Object.entries(courseCounts).map(([c,n])=>(<span key={c} style={{background:C.card2,padding:"2px 6px",borderRadius:4,fontSize:10}}>{c}: {n}</span>))}</div>
+            {pr.length>1&&(<div style={{marginTop:8}}><div style={{fontSize:10,color:C.muted,marginBottom:4}}>Recent Scores</div><div style={{display:"flex",gap:2,alignItems:"end",height:40}}>{pr.slice(0,20).reverse().map((r,i)=>{const mx=Math.max(...pr.map(x=>x.total));const mn=Math.min(...pr.map(x=>x.total));const range=mx-mn||1;const h=8+((r.total-mn)/range)*30;return<div key={i} style={{width:8,height:h,background:r.total-r.par<0?C.greenLt:r.total-r.par>0?"rgba(239,68,68,0.6)":C.muted,borderRadius:2}} title={`${r.total} (${r.course})`}/>;})}</div></div>)}
+          </div>);})}
+        </div>)}
+
+      </div>
+    </div>
+  );
+}
