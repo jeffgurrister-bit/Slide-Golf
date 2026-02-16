@@ -434,7 +434,7 @@ export default function App(){
             {useHdcp&&roundPlayers.length>0&&(<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8,fontSize:13}}>Handicap Course Par</div>{roundPlayers.map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderBottom:`1px solid ${C.border}`}}><span style={{fontSize:12,fontWeight:600}}>{p}</span><input value={hdcps[p]||""} onChange={e=>setHdcps(h=>({...h,[p]:parseInt(e.target.value)||0}))} placeholder="72" style={{...smallInput,width:50}}/></div>))}</div>)}
             {/* ─── GO LIVE BUTTON ─────────────────────── */}
             {!isLive&&roundPlayers.length>0&&(
-              <button onClick={goLive} style={{...btnS(false),width:"100%",padding:12,fontSize:14,background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.3)",color:C.red}}>📡 Go Live — Share with Friends</button>
+              <div style={{background:"red",padding:20,color:"white",fontSize:20}}>GO LIVE SHOULD BE HERE - isLive:{String(isLive)} players:{roundPlayers.length}</div>
             )}
             {isLive&&(<div style={{background:C.card,borderRadius:12,padding:14,border:"1px solid rgba(239,68,68,0.3)"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
