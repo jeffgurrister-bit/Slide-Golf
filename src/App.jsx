@@ -434,7 +434,7 @@ export default function App(){
             {useHdcp&&roundPlayers.length>0&&(<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8,fontSize:13}}>Handicap Course Par</div>{roundPlayers.map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderBottom:`1px solid ${C.border}`}}><span style={{fontSize:12,fontWeight:600}}>{p}</span><input value={hdcps[p]||""} onChange={e=>setHdcps(h=>({...h,[p]:parseInt(e.target.value)||0}))} placeholder="72" style={{...smallInput,width:50}}/></div>))}</div>)}
             {/* ─── GO LIVE BUTTON ─────────────────────── */}
             {!isLive&&roundPlayers.length>0&&(
-              <div style={{background:"red",padding:20,color:"white",fontSize:20}}>GO LIVE SHOULD BE HERE - isLive:{String(isLive)} players:{roundPlayers.length}</div>
+              <button onClick={goLive} style={{...btnS(false),width:"100%",padding:12,fontSize:14,background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.3)",color:C.red}}>📡 Go Live — Share with Friends</button>
             )}
             {isLive&&(<div style={{background:C.card,borderRadius:12,padding:14,border:"1px solid rgba(239,68,68,0.3)"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -444,9 +444,6 @@ export default function App(){
               <div style={{textAlign:"center",padding:"8px 0"}}><div style={{fontSize:11,color:C.muted}}>Share this code with friends:</div><div style={{fontSize:36,fontWeight:700,letterSpacing:8,color:C.white,marginTop:4}}>{liveData.code}</div></div>
               <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:8}}>{liveData.players.map(p=><span key={p} style={{background:C.accent,padding:"3px 8px",borderRadius:12,fontSize:11,color:p===me?C.greenLt:C.text}}>{p}{p===me?" (you)":""}</span>)}</div>
             </div>)}
-            <div style={{background:"red",padding:20,color:"white",fontSize:20}}>
-  DEBUG: isLive={String(isLive)} | players={roundPlayers.length} | liveId={String(liveId)}
-</div>
             {roundPlayers.length>0&&(<div style={{display:"flex",gap:8}}><button onClick={beginPlay} style={{...btnS(true),flex:1,padding:14,fontSize:15}}>⛳ Shot-by-Shot</button><button onClick={()=>setPlayMode("quick")} style={{...btnS(false),padding:14,fontSize:12}}>Quick Score</button></div>)}
           </>)}
 
@@ -483,4 +480,4 @@ export default function App(){
               </div>
             </div>)}
             <LiveBadge/>
-            {activeTourney&&(<div style={{background:"linear-gradient(135deg,#1a2a4
+            {activeTourney&&(<div style={{background:"linear-gradient(135deg,#1a2a4,#2a3a5a)"
