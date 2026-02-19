@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { C, btnS, inputS } from "../utils/theme.js";
-import { RelPar, countHIO } from "../utils/helpers.jsx";
+import { RelPar, countHIO, isRoundSealed } from "../utils/helpers.jsx";
 
 export default function HomeTab({
   me, players, rounds, allCourses, playerNames, pgaThisWeek,
@@ -7,9 +8,19 @@ export default function HomeTab({
   setTab, setCreating, handleGenerate, iMeJoined, tJoined,
   // Tournament panel props
   curTE, tEntries, tPar, myTRnds, myNextRd, tBoard, tShowAdj, setTShowAdj,
-  myTHdcp, setMyTHdcp, joinTourney, updateMyTourneyHdcp, playTourneyRound, playCasualPGA
+  myTHdcp, setMyTHdcp, joinTourney, updateMyTourneyHdcp, playTourneyRound, playCasualPGA,
+  leagueMatches, revealMatchResults
 }) {
   const tId = pgaThisWeek?.start;
+  const [revealedMatch, setRevealedMatch] = useState(null);
+  const [revealPhase, setRevealPhase] = useState(null);
+
+  // Find matches that are complete but I haven't revealed yet
+  const pendingReveals = (leagueMatches || []).filter(m =>
+    m.status === "complete" &&
+    (m.player1 === me || m.player2 === me) &&
+    !(m.resultsSeenBy || []).includes(me)
+  );
 
   if (showTourney && pgaThisWeek) return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -35,6 +46,67 @@ export default function HomeTab({
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
+      {/* Match Reveal Cards */}
+      {pendingReveals.map(m => {
+        const opp = m.player1 === me ? m.player2 : m.player1;
+        const isRevealing = revealedMatch === m.id;
+
+        if (isRevealing && revealPhase === "shown") {
+          const myScore = m.player1 === me ? m.p1Total : m.p2Total;
+          const oppScore = m.player1 === me ? m.p2Total : m.p1Total;
+          const iWon = m.winner === me;
+          const isTie = m.winner === "Tie";
+          return (
+            <div key={m.id} style={{
+              background: iWon ? "linear-gradient(135deg,#1a2a1a,#2a3a2a)" : isTie ? "linear-gradient(135deg,#2a2a1a,#3a3a2a)" : "linear-gradient(135deg,#2a1a1a,#3a2a2a)",
+              borderRadius: 12, padding: 20,
+              border: `2px solid ${iWon ? "#4abb4a" : isTie ? "#d4b84a" : "#ef4444"}`,
+              textAlign: "center", animation: "fadeIn 0.5s ease"
+            }}>
+              <div style={{fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 2}}>
+                {m.roundType === "F" ? "🏆 Championship" : m.roundType === "SF" ? "Semifinal" : m.roundType === "QF" ? "Quarterfinal" : "League Match"}
+              </div>
+              <div style={{fontSize: 13, color: C.muted, marginTop: 4}}>{m.course}</div>
+              <div style={{display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 12, marginTop: 16, alignItems: "center"}}>
+                <div style={{textAlign: "center"}}>
+                  <div style={{fontSize: 14, fontWeight: 700, color: m.winner === m.player1 ? "#4abb4a" : C.text}}>{m.player1}</div>
+                  <div style={{fontSize: 28, fontWeight: 900, color: "#fff", marginTop: 4}}>{m.p1Total}</div>
+                </div>
+                <div style={{fontSize: 16, fontWeight: 700, color: C.muted}}>vs</div>
+                <div style={{textAlign: "center"}}>
+                  <div style={{fontSize: 14, fontWeight: 700, color: m.winner === m.player2 ? "#4abb4a" : C.text}}>{m.player2}</div>
+                  <div style={{fontSize: 28, fontWeight: 900, color: "#fff", marginTop: 4}}>{m.p2Total}</div>
+                </div>
+              </div>
+              <div style={{marginTop: 12, fontSize: 14, fontWeight: 700, color: iWon ? "#4abb4a" : isTie ? C.gold : C.red}}>
+                {iWon ? `You win by ${m.margin}!` : isTie ? "It's a tie!" : `${m.winner} wins by ${m.margin}`}
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div key={m.id} style={{
+            background: "linear-gradient(135deg,#1a2a4a,#2a3a5a)",
+            borderRadius: 12, padding: 20,
+            border: "2px solid #d4b84a", textAlign: "center", cursor: "pointer"
+          }} onClick={async () => {
+            setRevealedMatch(m.id);
+            setRevealPhase("animating");
+            setTimeout(() => setRevealPhase("shown"), 800);
+            await revealMatchResults(m.id);
+          }}>
+            <div style={{fontSize: 24}}>🏆</div>
+            <div style={{fontSize: 16, fontWeight: 700, color: "#d4b84a", marginTop: 8}}>Match Results Are In!</div>
+            <div style={{fontSize: 13, color: C.muted, marginTop: 4}}>vs {opp} · {m.course || "Unknown Course"}</div>
+            {isRevealing && revealPhase === "animating"
+              ? <div style={{marginTop: 12, fontSize: 14, color: "#d4b84a", fontWeight: 600, animation: "pulse 0.8s infinite"}}>Revealing...</div>
+              : <div style={{marginTop: 12, padding: "10px 24px", background: "rgba(212,184,74,0.2)", borderRadius: 8, display: "inline-block", fontSize: 14, fontWeight: 700, color: "#d4b84a"}}>Tap to Reveal</div>
+            }
+          </div>
+        );
+      })}
+
       <div style={{textAlign:"center",padding:"20px 0"}}><div style={{fontSize:26,fontWeight:700,letterSpacing:3,textTransform:"uppercase"}}>Slide Golf</div><div style={{color:C.muted,marginTop:4,fontSize:13}}>League Scorecard & Tracker</div></div>
       <button onClick={()=>setTab("play")} style={{...btnS(true),padding:16,fontSize:16,width:"100%"}}>⛳ Start New Round</button>
       <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
@@ -48,7 +120,7 @@ export default function HomeTab({
       <button onClick={()=>setTab("league")} style={{...btnS(false),padding:14,fontSize:14,width:"100%",background:"linear-gradient(135deg,#2a1a1a,#3a2a1a)",border:"1px solid #5a4a2a",color:C.gold}}>🏆 League — Season 1</button>
       <button onClick={()=>setTab("leaderboard")} style={{...btnS(false),padding:14,fontSize:14,width:"100%"}}>📊 Leaderboard</button>
       <div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:10}}>Quick Stats</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>{[[playerNames.length,"Players"],[rounds.length,"Rounds"],[allCourses.length,"Courses"]].map(([v,l])=>(<div key={l} style={{textAlign:"center"}}><div style={{fontSize:22,fontWeight:700,color:C.greenLt}}>{v}</div><div style={{fontSize:10,color:C.muted}}>{l}</div></div>))}</div></div>
-      {rounds.length>0&&<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8}}>Recent Rounds</div>{rounds.slice(0,5).map(r=>{const hio=r.holeInOnes||countHIO(r.scores)||0;return<div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}><div><span style={{fontWeight:600}}>{r.player}</span><span style={{color:C.muted,fontSize:11,marginLeft:8}}>{r.course}</span></div><div style={{display:"flex",gap:6,alignItems:"center"}}>{r.hidden?<span style={{color:C.muted,fontSize:11}}>🙈</span>:<><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></>}{hio>0&&<span style={{fontSize:10,color:"#ff6b00"}}>🎯{hio}</span>}</div></div>;})}</div>}
+      {rounds.length>0&&<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8}}>Recent Rounds</div>{rounds.slice(0,5).map(r=>{const hio=r.holeInOnes||countHIO(r.scores)||0;const sealed=isRoundSealed(r,leagueMatches,me);return<div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}><div><span style={{fontWeight:600}}>{r.player}</span><span style={{color:C.muted,fontSize:11,marginLeft:8}}>{r.course}</span></div><div style={{display:"flex",gap:6,alignItems:"center"}}>{sealed?<span style={{color:C.muted,fontSize:11}}>🔒 Sealed</span>:r.hidden?<span style={{color:C.muted,fontSize:11}}>🙈</span>:<><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></>}{!sealed&&hio>0&&<span style={{fontSize:10,color:"#ff6b00"}}>🎯{hio}</span>}</div></div>;})}</div>}
     </div>
   );
 }
