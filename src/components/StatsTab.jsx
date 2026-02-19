@@ -1,10 +1,11 @@
 import { C } from "../utils/theme.js";
+import { isRoundSealed } from "../utils/helpers.jsx";
 
-export default function StatsTab({ playerStats, rounds }) {
+export default function StatsTab({ playerStats, rounds, leagueMatches, me }) {
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <h2 style={{margin:0,fontSize:18}}>📈 Stats</h2>
-      {playerStats.map(p=>{const pr=rounds.filter(r=>r.player===p.name&&r.holesPlayed===18);if(!pr.length)return null;const courseCounts={};pr.forEach(r=>{courseCounts[r.course]=(courseCounts[r.course]||0)+1;});return<div key={p.name} style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+      {playerStats.map(p=>{const pr=rounds.filter(r=>r.player===p.name&&r.holesPlayed===18&&!isRoundSealed(r,leagueMatches,me));if(!pr.length)return null;const courseCounts={};pr.forEach(r=>{courseCounts[r.course]=(courseCounts[r.course]||0)+1;});return<div key={p.name} style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
         <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>{p.name}</div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}>
           <div style={{textAlign:"center"}}><div style={{fontSize:18,fontWeight:700,color:C.greenLt}}>{p.handicap!=null?p.handicap:"-"}</div><div style={{fontSize:9,color:C.muted}}>HDCP</div></div>
