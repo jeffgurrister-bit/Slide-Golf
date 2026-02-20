@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { db } from "./firebase.js";
 import {
   collection, addDoc, deleteDoc, doc, onSnapshot,
@@ -10,7 +10,7 @@ import { COURSES } from "./data/courses.js";
 import { PGA_2026, getPGACourse } from "./data/pga2026.js";
 
 // ─── UTILITY IMPORTS ────────────────────────────────────
-import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, scoreName, RelPar, genLiveCode, calcNeed, isRoundSealed } from "./utils/helpers.jsx";
+import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, scoreName, RelPar, genLiveCode, calcNeed, isRoundSealed, computeCourseRecords, computeAchievements } from "./utils/helpers.jsx";
 import { generateCourse } from "./utils/generate.js";
 import { C, btnS, inputS, smallInput } from "./utils/theme.js";
 import { generateRRSchedule, LEAGUE_FORMATS } from "./data/league.js";
@@ -49,7 +49,17 @@ export default function App(){
   const[leagues,setLeagues]=useState([]);
   const[leagueMatches,setLeagueMatches]=useState([]);
   const[selectedLeague,setSelectedLeague]=useState("s1");
-  const[activeLeagueMatch,setActiveLeagueMatch]=useState(null); // {matchId, leagueId, isChampionship}
+  const[activeLeagueMatch,setActiveLeagueMatch]=useState(null);
+
+  // ─── FEATURE STATE (Course Records, Round Detail, Player Profile, Edit Round, Share) ───
+  const[newRecordInfo,setNewRecordInfo]=useState(null);
+  const[detailRound,setDetailRound]=useState(null);
+  const[profilePlayer,setProfilePlayer]=useState(null);
+  const[editingRound,setEditingRound]=useState(false);
+  const[editScores,setEditScores]=useState(null);
+  const[shareMode,setShareMode]=useState(null); // null | "single" | "group"
+  const[shareOverlay,setShareOverlay]=useState(false);
+  const shareRef=useRef(null);
 
   const allCourses=[...COURSES,...customCourses];
   const isLive=!!liveId&&!!liveData;
@@ -62,7 +72,6 @@ export default function App(){
     u.push(onSnapshot(query(collection(db,"rounds"),orderBy("createdAt","desc")),s=>{setRounds(s.docs.map(d=>({id:d.id,...d.data()})));}));
     u.push(onSnapshot(collection(db,"customCourses"),s=>{setCustomCourses(s.docs.map(d=>({id:d.id,...d.data(),generated:true})));}));
     u.push(onSnapshot(collection(db,"pgaTourneys"),s=>{setTEntries(s.docs.map(d=>({id:d.id,...d.data()})));}));
-    // League listeners
     u.push(onSnapshot(collection(db,"leagues"),s=>{setLeagues(s.docs.map(d=>({id:d.id,...d.data()})));}));
     u.push(onSnapshot(collection(db,"leagueMatches"),s=>{setLeagueMatches(s.docs.map(d=>({id:d.id,...d.data()})));}));
     setLoaded(true);return()=>u.forEach(x=>x());
@@ -159,7 +168,7 @@ export default function App(){
 
   // ─── LEAGUE FUNCTIONS ─────────────────────────────────
   async function createLeague(name, useHandicap) {
-    const code = genLiveCode() + genLiveCode().slice(0,2); // 6-char code
+    const code = genLiveCode() + genLiveCode().slice(0,2);
     const ref = await addDoc(collection(db,"leagues"), {
       name, code: code.toUpperCase(), creator: me, status: "lobby",
       players: [me], useHdcp: useHandicap || false,
@@ -186,12 +195,8 @@ export default function App(){
     const n = lg.players.length;
     const fmt = LEAGUE_FORMATS[n];
     if (!fmt) { alert("Need 4-10 players to start"); return; }
-
-    // Generate round-robin schedule
     const schedule = generateRRSchedule(lg.players);
     let matchNum = 0;
-
-    // Create match documents
     for (let rIdx = 0; rIdx < schedule.length; rIdx++) {
       for (const [p1, p2] of schedule[rIdx]) {
         matchNum++;
@@ -205,7 +210,6 @@ export default function App(){
         });
       }
     }
-
     await updateDoc(doc(db,"leagues",leagueId), {
       status: "active", totalRounds: schedule.length, currentRound: 1,
       playoffSize: fmt.playoffSize, formatName: fmt.name
@@ -213,56 +217,27 @@ export default function App(){
   }
 
   function playLeagueMatch(matchIdOrSpecial) {
-    // Handle S1 Championship special case
     if (matchIdOrSpecial === "s1-final") {
-      // Nebraska is the championship course
       const nebraska = allCourses.find(c => c.name === "Nebraska");
       if (!nebraska) { alert("Nebraska course not found!"); return; }
       setActiveLeagueMatch({ matchId: "s1-final", leagueId: "s1", isChampionship: true });
-      setSelCourse(nebraska);
-      setRoundPlayers([me]);
-      setAllScores({[me]: Array(18).fill(null)});
-      setAllShotLogs({[me]: Array.from({length:18},()=>[])});
-      setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);
-      setHideScores(true); // Hidden since opponents play separately
-      setActiveTourney(null);
-      setTab("play");
+      setSelCourse(nebraska);setRoundPlayers([me]);
+      setAllScores({[me]: Array(18).fill(null)});setAllShotLogs({[me]: Array.from({length:18},()=>[])});
+      setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(true);setActiveTourney(null);setTab("play");
       return;
     }
-
-    // Dynamic league match
     const match = leagueMatches.find(m => m.id === matchIdOrSpecial);
     if (!match) return;
-
-    // Check if first player already set the course
     const isP1 = match.player1 === me;
     let course = null;
-
     if (match.course) {
-      // Course already set — find it
       course = allCourses.find(c => c.name === match.course);
       if (!course) { alert("Course not found: " + match.course); return; }
     }
-    // If no course set, player will pick in the Play tab setup
-
-    setActiveLeagueMatch({
-      matchId: match.id, leagueId: match.leagueId,
-      isChampionship: match.roundType === "F",
-      roundType: match.roundType
-    });
-
-    if (course) {
-      setSelCourse(course);
-    } else {
-      setSelCourse(null); // Let them pick
-    }
-    setRoundPlayers([me]);
-    setAllScores({[me]: Array(18).fill(null)});
-    setAllShotLogs({[me]: Array.from({length:18},()=>[])});
-    setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);
-    setHideScores(true);
-    setActiveTourney(null);
-    setTab("play");
+    setActiveLeagueMatch({ matchId: match.id, leagueId: match.leagueId, isChampionship: match.roundType === "F", roundType: match.roundType });
+    if (course) setSelCourse(course); else setSelCourse(null);
+    setRoundPlayers([me]);setAllScores({[me]: Array(18).fill(null)});setAllShotLogs({[me]: Array.from({length:18},()=>[])});
+    setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(true);setActiveTourney(null);setTab("play");
   }
 
   async function revealMatchResults(matchId) {
@@ -270,9 +245,7 @@ export default function App(){
     if (!match || match.status !== "complete") return;
     const seen = match.resultsSeenBy || [];
     if (seen.includes(me)) return;
-    await updateDoc(doc(db, "leagueMatches", matchId), {
-      resultsSeenBy: [...seen, me]
-    });
+    await updateDoc(doc(db, "leagueMatches", matchId), { resultsSeenBy: [...seen, me] });
   }
 
   // ─── COURSE CREATOR ────────────────────────────────────
@@ -330,10 +303,29 @@ export default function App(){
 
   async function saveRound(){
     const totalPar=selCourse.holes.reduce((s,h)=>s+h.par,0);
+    // Snapshot current records BEFORE saving
+    const preRecords = { ...courseRecords };
+
     for(const p of roundPlayers){
       const sc=allScores[p]||Array(18).fill(null);const total=sc.reduce((s,v)=>s+(v||0),0);const hio=countHIO(sc);const hd=useHdcp?(hdcps[p]||null):null;
+      // Derive totalPutts from shotLogs
+      const logs = allShotLogs[p] || [];
+      const derivedPutts = logs.reduce((sum, holeLogs) => sum + (holeLogs || []).filter(s => s.type === "putt").length, 0) || null;
+
       if(p===me||!isLive||isKeeperHost){
-        await saveRoundToDB({player:p,course:selCourse.name,courseLevel:selCourse.level,date:new Date().toISOString().split("T")[0],scores:sc,total,par:totalPar,holesPlayed:sc.filter(v=>v!==null).length,diff:total-totalPar,holeInOnes:hio,hidden:hideScores,hdcp:hd,adjTotal:hd?total-hd:null,sealedMatchId:activeLeagueMatch&&activeLeagueMatch.matchId!=="s1-final"?activeLeagueMatch.matchId:null});
+        await saveRoundToDB({
+          player:p, course:selCourse.name, courseLevel:selCourse.level,
+          date:new Date().toISOString().split("T")[0],
+          scores:sc, total, par:totalPar,
+          holesPlayed:sc.filter(v=>v!==null).length,
+          diff:total-totalPar, holeInOnes:hio,
+          hidden:hideScores, hdcp:hd, adjTotal:hd?total-hd:null,
+          sealedMatchId:activeLeagueMatch&&activeLeagueMatch.matchId!=="s1-final"?activeLeagueMatch.matchId:null,
+          // ─── NEW FIELDS (Feature 3) ───
+          shotLogs: allShotLogs[p] || null,
+          totalPutts: derivedPutts,
+          courseHoles: selCourse.holes
+        });
         if(activeTourney){
           const tJoin=tEntries.find(e=>e.tournamentId===activeTourney.key&&e.player===p&&e.round===0);const tHd=tJoin?.hdcp||hd;
           const existing=tEntries.find(e=>e.tournamentId===activeTourney.key&&e.player===p&&e.round===activeTourney.round);
@@ -350,45 +342,61 @@ export default function App(){
         const total=sc.reduce((s,v)=>s+(v||0),0);
         const isP1=match.player1===me;
         const updates={};
-
         if(isP1){
           updates.p1Total=total;updates.p1Par=totalPar;updates.p1Scores=sc;
-          if(!match.course)updates.course=selCourse.name; // First player sets course
+          if(!match.course)updates.course=selCourse.name;
         }else{
           updates.p2Total=total;updates.p2Par=totalPar;updates.p2Scores=sc;
           if(!match.course)updates.course=selCourse.name;
         }
-
-        // Check if match is now complete (both players have scores)
         const p1Done=isP1?true:(match.p1Total!=null);
         const p2Done=isP1?(match.p2Total!=null):true;
         const p1Tot=isP1?total:match.p1Total;
         const p2Tot=isP1?match.p2Total:total;
-
         if(p1Done&&p2Done&&p1Tot!=null&&p2Tot!=null){
-          updates.status="complete";
-          updates.resultsSeenBy=[];
+          updates.status="complete";updates.resultsSeenBy=[];
           if(p1Tot<p2Tot){updates.winner=match.player1;updates.margin=p2Tot-p1Tot;}
           else if(p2Tot<p1Tot){updates.winner=match.player2;updates.margin=p1Tot-p2Tot;}
           else{updates.winner="Tie";updates.margin=0;}
-        }else{
-          updates.status="in-progress";
-        }
-
+        }else{updates.status="in-progress";}
         await updateDoc(doc(db,"leagueMatches",match.id),updates);
-
-        // Check if all regular season matches are complete → trigger playoffs
-        if(updates.status==="complete"){
-          await checkLeagueProgress(match.leagueId);
-        }
+        if(updates.status==="complete"){await checkLeagueProgress(match.leagueId);}
       }
     }
 
     if(isLive){await syncMyScores();}
-    if(activeTourney){setActiveTourney(null);setShowTourney(true);setTab("home");}
-    else if(activeLeagueMatch){setActiveLeagueMatch(null);setTab("league");}
-    else setTab("leaderboard");
+
+    // ─── COURSE RECORD CHECK (Feature 2) ───
+    let recordBroken = false;
+    const courseName = selCourse.name;
+    for (const p of roundPlayers) {
+      const sc = allScores[p] || Array(18).fill(null);
+      const total = sc.reduce((s, v) => s + (v || 0), 0);
+      const holesPlayed = sc.filter(v => v !== null).length;
+      if (holesPlayed !== 18) continue;
+      const old = preRecords[courseName];
+      if (!old || total < old.total) {
+        const dest = activeTourney ? "home" : activeLeagueMatch ? "league" : "leaderboard";
+        setNewRecordInfo({ player: p, course: courseName, newScore: total, newPar: totalPar, oldRecord: old || null, navigateTo: dest });
+        recordBroken = true;
+        break;
+      }
+    }
+
+    if (!recordBroken) {
+      if(activeTourney){setActiveTourney(null);setShowTourney(true);setTab("home");}
+      else if(activeLeagueMatch){setActiveLeagueMatch(null);setTab("league");}
+      else setTab("leaderboard");
+    }
     if(isLive)leaveLive();
+  }
+
+  function dismissRecord() {
+    const dest = newRecordInfo?.navigateTo || "leaderboard";
+    setNewRecordInfo(null);
+    if (activeTourney) { setActiveTourney(null); setShowTourney(true); }
+    if (activeLeagueMatch) setActiveLeagueMatch(null);
+    setTab(dest);
   }
 
   // ─── CHECK LEAGUE PROGRESS (AUTO-ADVANCE) ────────────
@@ -398,10 +406,7 @@ export default function App(){
     const allMatches=leagueMatches.filter(m=>m.leagueId===leagueId);
     const regMatches=allMatches.filter(m=>m.roundType==="regular");
     const allDone=regMatches.every(m=>m.status==="complete");
-
     if(allDone&&!allMatches.some(m=>m.roundType!=="regular")){
-      // All regular season done — generate playoffs
-      const standings=[];
       const stats={};
       lg.players.forEach(p=>{stats[p]={player:p,pts:0,diff:0};});
       regMatches.forEach(m=>{
@@ -416,8 +421,6 @@ export default function App(){
       if(!fmt)return;
       const ps=fmt.playoffSize;
       const seeds=sorted.slice(0,ps);
-
-      // Generate playoff matches based on size
       if(ps<=2){
         await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:1,roundType:"F",player1:seeds[0]?.player,player2:seeds[1]?.player,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
       }else if(ps<=4){
@@ -425,23 +428,12 @@ export default function App(){
         await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:2,roundType:"SF",player1:seeds[1]?.player,player2:seeds[2]?.player,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
         await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+2,matchNum:1,roundType:"F",player1:null,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
       }else{
-        // 6-7 seeds: QF + SF + F
         const qfMatches=[];
-        if(ps>=7){
-          qfMatches.push([seeds[4]?.player,seeds[3]?.player]);
-          qfMatches.push([seeds[1]?.player,seeds[6]?.player]);
-          qfMatches.push([seeds[2]?.player,seeds[5]?.player]);
-        }else{
-          qfMatches.push([seeds[2]?.player,seeds[5]?.player]);
-          qfMatches.push([seeds[3]?.player,seeds[4]?.player]);
-        }
-        for(let i=0;i<qfMatches.length;i++){
-          await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:i+1,roundType:"QF",player1:qfMatches[i][0],player2:qfMatches[i][1],course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-        }
-        // SF placeholders
+        if(ps>=7){qfMatches.push([seeds[4]?.player,seeds[3]?.player]);qfMatches.push([seeds[1]?.player,seeds[6]?.player]);qfMatches.push([seeds[2]?.player,seeds[5]?.player]);}
+        else{qfMatches.push([seeds[2]?.player,seeds[5]?.player]);qfMatches.push([seeds[3]?.player,seeds[4]?.player]);}
+        for(let i=0;i<qfMatches.length;i++){await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:i+1,roundType:"QF",player1:qfMatches[i][0],player2:qfMatches[i][1],course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});}
         await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+2,matchNum:1,roundType:"SF",player1:seeds[0]?.player,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
         await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+2,matchNum:2,roundType:"SF",player1:ps>=7?null:seeds[1]?.player,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-        // Final placeholder
         await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+3,matchNum:1,roundType:"F",player1:null,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
       }
       await updateDoc(doc(db,"leagues",leagueId),{status:"playoffs"});
@@ -454,6 +446,85 @@ export default function App(){
     const completed=sc.slice(0,thru).reduce((s,v)=>s+(v||0),0);
     const parThru=selCourse.holes.slice(0,thru).reduce((s,h)=>s+h.par,0);
     return{total:completed,par:parThru,thru};
+  }
+
+  // ─── FEATURE FUNCTIONS ─────────────────────────────────
+  function openRoundDetail(round) { setDetailRound(round); setEditingRound(false); setEditScores(null); setShareOverlay(false); }
+  function closeRoundDetail() { setDetailRound(null); setEditingRound(false); setEditScores(null); setShareOverlay(false); }
+  function openPlayerProfile(name) { setProfilePlayer(name); }
+  function closePlayerProfile() { setProfilePlayer(null); }
+
+  // ─── EDIT ROUND (Feature 10) ───────────────────────────
+  async function saveEditedRound() {
+    if (!detailRound || !editScores) return;
+    const newTotal = editScores.reduce((s, v) => s + (v || 0), 0);
+    const newDiff = newTotal - detailRound.par;
+    const newHolesPlayed = editScores.filter(v => v !== null).length;
+    const newHIO = editScores.filter(v => v === 1).length;
+
+    let newShotLogs = detailRound.shotLogs ? [...detailRound.shotLogs] : null;
+    let newTotalPutts = detailRound.totalPutts;
+    if (newShotLogs) {
+      (detailRound.scores||[]).forEach((orig, i) => {
+        if (orig !== editScores[i]) newShotLogs[i] = [];
+      });
+      newTotalPutts = newShotLogs.reduce((sum, holeLogs) =>
+        sum + (holeLogs || []).filter(s => s.type === "putt").length, 0) || null;
+    }
+    const newAdjTotal = detailRound.hdcp ? newTotal - detailRound.hdcp : null;
+
+    if (detailRound.sealedMatchId) {
+      if (!confirm("This round is part of a league match. Editing will update the match result. Continue?")) return;
+    }
+
+    await updateDoc(doc(db, "rounds", detailRound.id), {
+      scores: editScores, total: newTotal, diff: newDiff,
+      holesPlayed: newHolesPlayed, holeInOnes: newHIO,
+      shotLogs: newShotLogs, totalPutts: newTotalPutts,
+      adjTotal: newAdjTotal
+    });
+
+    if (detailRound.sealedMatchId) {
+      const match = leagueMatches.find(m => m.id === detailRound.sealedMatchId);
+      if (match) {
+        const isP1 = match.player1 === detailRound.player;
+        const updates = {};
+        if (isP1) updates.p1Total = newTotal; else updates.p2Total = newTotal;
+        const p1T = isP1 ? newTotal : match.p1Total;
+        const p2T = isP1 ? match.p2Total : newTotal;
+        if (p1T != null && p2T != null) {
+          if (p1T < p2T) { updates.winner = match.player1; updates.margin = p2T - p1T; }
+          else if (p2T < p1T) { updates.winner = match.player2; updates.margin = p1T - p2T; }
+          else { updates.winner = "Tie"; updates.margin = 0; }
+        }
+        await updateDoc(doc(db, "leagueMatches", match.id), updates);
+      }
+    }
+
+    setEditingRound(false); setEditScores(null); setDetailRound(null);
+  }
+
+  // ─── SHARE CARD (Feature 17) ──────────────────────────
+  async function generateShareCard() {
+    const el = shareRef.current;
+    if (!el) return;
+    try {
+      const html2canvas = (await import("html2canvas")).default;
+      const canvas = await html2canvas(el, { backgroundColor: "#1a2a1a", scale: 2 });
+      canvas.toBlob(async (blob) => {
+        if (!blob) return;
+        const file = new File([blob], 'slideGolf-scorecard.png', { type: 'image/png' });
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+          try { await navigator.share({ files: [file], title: 'Slide Golf Scorecard' }); } catch(e) {}
+        } else {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'slideGolf-scorecard.png';
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+      }, 'image/png');
+    } catch(e) { alert("Error generating card: " + e.message); }
   }
 
   // ─── LOADING / LOGIN ──────────────────────────────────
@@ -472,6 +543,7 @@ export default function App(){
   // ─── COMPUTED VALUES ───────────────────────────────────
   const playerNames=players.map(p=>p.name);
   const playerStats=playerNames.map(name=>{const pr=rounds.filter(r=>r.player===name&&r.holesPlayed===18);const unsealed=pr.filter(r=>!isRoundSealed(r,leagueMatches,me));const hcp=calcHandicap(unsealed);const best=unsealed.length?Math.min(...unsealed.map(r=>r.total)):null;const avg=unsealed.length?Math.round(unsealed.reduce((s,r)=>s+r.total,0)/unsealed.length*10)/10:null;const hio=rounds.filter(r=>r.player===name&&!isRoundSealed(r,leagueMatches,me)).reduce((s,r)=>s+(r.holeInOnes||countHIO(r.scores)||0),0);return{name,rounds:unsealed.length,handicap:hcp,best,avg,holeInOnes:hio};}).sort((a,b)=>(a.handicap??999)-(b.handicap??999));
+  const courseRecords = computeCourseRecords(rounds, leagueMatches, me);
   const pgaThisWeek=getPGACourse();
   const tId=pgaThisWeek?.start;const curTE=tId?tEntries.filter(e=>e.tournamentId===tId):[];
   const tJoined=[...new Set(curTE.map(e=>e.player))];const iMeJoined=tJoined.includes(me);
@@ -481,10 +553,37 @@ export default function App(){
 
   const LiveBadge=()=>isLive?<div style={{background:"rgba(239,68,68,0.15)",border:"1px solid rgba(239,68,68,0.4)",borderRadius:8,padding:"6px 10px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:8,height:8,borderRadius:4,background:C.red,animation:"pulse 1.5s infinite"}}/><span style={{fontSize:12,fontWeight:700,color:C.red}}>LIVE</span><span style={{fontSize:12,color:C.text,fontWeight:700,letterSpacing:2}}>{liveData.code}</span></div><div style={{fontSize:10,color:C.muted}}>{liveData.players.length} player{liveData.players.length!==1?"s":""} · {liveScoreMode==="keeper"?"1 Scorekeeper":"Self-Score"}</div></div>:null;
 
-  // League match badge
   const LeagueMatchBadge=()=>activeLeagueMatch?<div style={{background:activeLeagueMatch.isChampionship?"rgba(212,184,74,0.15)":"rgba(74,170,74,0.15)",border:`1px solid ${activeLeagueMatch.isChampionship?"rgba(212,184,74,0.4)":"rgba(74,170,74,0.4)"}`,borderRadius:8,padding:"6px 10px",textAlign:"center"}}><span style={{fontSize:12,fontWeight:700,color:activeLeagueMatch.isChampionship?C.gold:C.greenLt}}>{activeLeagueMatch.isChampionship?"🏆 CHAMPIONSHIP ROUND":"⚡ League Match"}</span></div>:null;
 
   const ScorecardView=()=>(<div style={{background:C.card,borderRadius:12,border:`1px solid ${C.greenLt}`,overflow:"hidden"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:C.accent}}><span style={{fontWeight:700,fontSize:13}}>📋 Scorecard</span><button onClick={()=>setShowScorecard(false)} style={{background:"transparent",border:"none",color:C.text,cursor:"pointer",fontSize:14}}>✕</button></div><div style={{overflowX:"auto",padding:6}}>{[0,9].map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:9,marginBottom:start===0?4:0,minWidth:420}}><thead><tr style={{background:C.accent}}><th style={{padding:"3px 4px",textAlign:"left",minWidth:40}}>HOLE</th>{selCourse.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"3px 1px",textAlign:"center",minWidth:24,background:h.num-1===curHole?"rgba(74,170,74,0.3)":"transparent"}}>{h.num}</th>)}<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>{start===0?"OUT":"IN"}</th>{start===9&&<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>TOT</th>}</tr></thead><tbody><tr style={{background:C.card2}}><td style={{padding:"2px 4px",fontWeight:600,color:C.greenLt,fontSize:8}}>RNG</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,0,18)}</td>}</tr><tr><td style={{padding:"2px 4px",fontWeight:600,fontSize:9}}>PAR</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",padding:"2px 1px"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{selCourse.holes.reduce((s,h)=>s+h.par,0)}</td>}</tr>{!hideScores&&roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);return(<tr key={p} style={{borderTop:`1px solid ${C.border}`}}><td style={{padding:"2px 4px",fontWeight:600,fontSize:8}}>{p}{isLive&&p!==me?<span style={{color:C.blue,fontSize:7}}> 📡</span>:""}</td>{selCourse.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const v=sc[idx];return<td key={h.num} style={{textAlign:"center",fontSize:9,fontWeight:700,color:v===1?"#ff6b00":v!==null&&v<h.par?C.greenLt:v!==null&&v>h.par?"#ff6b6b":v!==null?C.text:C.muted,background:h.num-1===curHole?"rgba(74,170,74,0.1)":"transparent"}}>{v??"-"}</td>;})}<td style={{textAlign:"center",fontWeight:700,fontSize:9}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,fontSize:9,color:C.greenLt}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}</tr>);})}</tbody></table>))}</div></div>);
+
+  // ─── SCORE CELL HELPER (for detail overlay & share card) ───
+  function ScoreCell({score, par, size=24, fontSize=12}) {
+    if (score == null) return <td style={{textAlign:"center",padding:2}}><span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:size,height:size,color:C.muted,fontSize}}>—</span></td>;
+    const diff = score - par;
+    const isHIO = score === 1;
+    let border = "none", borderRadius = 0, borderWidth = 1, bgColor = "transparent", color = "#222";
+    if (isHIO) { bgColor = "#ff6b00"; borderRadius = 50; color = "#fff"; }
+    else if (diff <= -2) { border = "solid"; borderRadius = 50; borderWidth = 3; }
+    else if (diff === -1) { border = "solid"; borderRadius = 50; borderWidth = 1; }
+    else if (diff === 1) { border = "solid"; borderRadius = 0; borderWidth = 1; }
+    else if (diff >= 2) { border = "solid"; borderRadius = 0; borderWidth = 3; }
+    return (
+      <td style={{textAlign:"center",padding:2}}>
+        <span style={{
+          display:"inline-flex",alignItems:"center",justifyContent:"center",
+          width:size,height:size,borderRadius,
+          border: border !== "none" ? `${borderWidth}px solid #333` : "none",
+          background:bgColor, color, fontWeight:700, fontSize
+        }}>{score}</span>
+      </td>
+    );
+  }
+
+  // ─── GROUP ROUNDS for share card ───
+  function getGroupRounds(round) {
+    return rounds.filter(r => r.course === round.course && r.date === round.date && r.id !== round.id);
+  }
 
   // ─── RENDER ────────────────────────────────────────────
   return(
@@ -496,13 +595,325 @@ export default function App(){
       <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`}}>{[["home","Home"],["courses","Courses"],["play","Play"],["league","League"],["leaderboard","Board"],["stats","Stats"]].map(([k,l])=>(<button key={k} onClick={()=>{setTab(k);if(k==="courses")setCreating(false);if(k!=="home")setShowTourney(false);}} style={{flex:1,padding:"11px 4px",background:tab===k?C.accent:"transparent",color:tab===k?C.white:C.muted,border:"none",cursor:"pointer",fontSize:11,fontWeight:tab===k?700:400,borderBottom:tab===k?`2px solid ${C.greenLt}`:"2px solid transparent"}}>{l}</button>))}</div>
 
       <div style={{maxWidth:600,margin:"0 auto",padding:16}}>
-        {tab==="home"&&<HomeTab me={me} players={players} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults}/>}
-        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} allCourses={allCourses} createLeague={createLeague} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague}/>}
-        {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator}/>}
-        {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView}/></>}
-        {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches}/>}
-        {tab==="stats"&&<StatsTab playerStats={playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me}/>}
+        {tab==="home"&&<HomeTab me={me} players={players} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults} openRoundDetail={openRoundDetail}/>}
+        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} allCourses={allCourses} createLeague={createLeague} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile}/>}
+        {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords}/>}
+        {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell}/></>}
+        {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses}/>}
+        {tab==="stats"&&<StatsTab playerStats={playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses}/>}
       </div>
+
+      {/* ═══ ROUND DETAIL OVERLAY (Feature 3 + 10 + 17) ═══ */}
+      {detailRound && (
+        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",display:"flex",alignItems:"flex-start",justifyContent:"center",zIndex:9998,overflowY:"auto",padding:"40px 16px"}} onClick={e=>{if(e.target===e.currentTarget)closeRoundDetail();}}>
+          <div style={{background:C.bg,borderRadius:16,border:`1px solid ${C.border}`,maxWidth:560,width:"100%",animation:"fadeIn 0.3s ease"}} onClick={e=>e.stopPropagation()}>
+            {/* Header */}
+            <div style={{padding:"16px 20px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:18}}>{detailRound.player}</div>
+                <div style={{fontSize:12,color:C.muted}}>{detailRound.course} · {detailRound.date}</div>
+                {detailRound.sealedMatchId && <div style={{fontSize:10,color:C.gold,marginTop:2}}>⚡ League Match</div>}
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                {!editingRound && detailRound.player === me && <button onClick={()=>{setEditingRound(true);setEditScores([...(detailRound.scores||Array(18).fill(null))]);}} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>✏️ Edit</button>}
+                {!editingRound && <button onClick={()=>setShareOverlay(true)} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>📤 Share</button>}
+                <button onClick={closeRoundDetail} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:20,lineHeight:1}}>✕</button>
+              </div>
+            </div>
+
+            {/* Scorecard */}
+            <div style={{padding:"12px 10px",overflowX:"auto"}}>
+              {[0,9].map(start=>{
+                const holes = detailRound.courseHoles || allCourses.find(c=>c.name===detailRound.course)?.holes;
+                return <table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:10,marginBottom:start===0?6:0,minWidth:420}}>
+                  <thead><tr style={{background:C.accent}}>
+                    <th style={{padding:"4px 6px",textAlign:"left",minWidth:44}}>HOLE</th>
+                    {(holes||[]).slice(start,start+9).map((h,i)=><th key={i} style={{padding:"4px 2px",textAlign:"center",minWidth:28}}>{start+i+1}</th>)}
+                    <th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:36}}>{start===0?"OUT":"IN"}</th>
+                    {start===9&&<th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:36}}>TOT</th>}
+                  </tr></thead>
+                  <tbody>
+                    {holes && <tr style={{background:C.card2}}>
+                      <td style={{padding:"3px 6px",fontWeight:600,color:C.greenLt,fontSize:9}}>RANGE</td>
+                      {holes.slice(start,start+9).map((h,i)=><td key={i} style={{textAlign:"center",fontSize:8,color:C.muted}}>{fmtR(h.range)}</td>)}
+                      <td style={{textAlign:"center",fontSize:8,color:C.muted}}>{holes?fmtRange(holes,start,start+9):""}</td>
+                      {start===9&&<td style={{textAlign:"center",fontSize:8,color:C.muted}}>{holes?fmtRange(holes,0,18):""}</td>}
+                    </tr>}
+                    {holes && <tr>
+                      <td style={{padding:"3px 6px",fontWeight:600}}>PAR</td>
+                      {holes.slice(start,start+9).map((h,i)=><td key={i} style={{textAlign:"center"}}>{h.par}</td>)}
+                      <td style={{textAlign:"center",fontWeight:700}}>{holes?calcPar(holes,start,start+9):""}</td>
+                      {start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{holes?holes.reduce((s,h)=>s+h.par,0):""}</td>}
+                    </tr>}
+                    <tr style={{borderTop:`1px solid ${C.border}`}}>
+                      <td style={{padding:"3px 6px",fontWeight:600,fontSize:9}}>SCORE</td>
+                      {(editingRound ? editScores : detailRound.scores || []).slice(start,start+9).map((v,i)=>{
+                        const idx = start+i;
+                        if (editingRound) {
+                          return <td key={i} style={{padding:2}}><input value={editScores[idx]??""} onChange={e=>{const ns=[...editScores];ns[idx]=e.target.value===""?null:Math.max(1,Math.min(15,parseInt(e.target.value)||null));setEditScores(ns);}} style={{...smallInput,width:28,fontSize:11}}/></td>;
+                        }
+                        const par = holes?.[idx]?.par;
+                        return par != null ? <ScoreCell key={i} score={v} par={par} size={22} fontSize={11}/> :
+                          <td key={i} style={{textAlign:"center",fontWeight:700,fontSize:11}}>{v??"-"}</td>;
+                      })}
+                      <td style={{textAlign:"center",fontWeight:700,fontSize:10}}>{(editingRound?editScores:detailRound.scores||[]).slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>
+                      {start===9&&<td style={{textAlign:"center",fontWeight:700,fontSize:10,color:C.greenLt}}>{(editingRound?editScores:detailRound.scores||[]).reduce((s,v)=>s+(v||0),0)||"-"}</td>}
+                    </tr>
+                  </tbody>
+                </table>;
+              })}
+            </div>
+
+            {/* Edit buttons */}
+            {editingRound && <div style={{padding:"8px 16px",display:"flex",gap:8}}>
+              <button onClick={()=>{setEditingRound(false);setEditScores(null);}} style={{...btnS(false),flex:1,padding:10,fontSize:12}}>Cancel</button>
+              <button onClick={saveEditedRound} style={{...btnS(true),flex:1,padding:10,fontSize:12}}>💾 Save Changes</button>
+            </div>}
+
+            {/* Summary stats */}
+            {!editingRound && <div style={{display:"flex",justifyContent:"space-around",padding:"12px 16px",borderTop:`1px solid ${C.border}`,borderBottom:`1px solid ${C.border}`}}>
+              <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:700}}>{detailRound.total}</div><div style={{fontSize:9,color:C.muted}}>Total</div></div>
+              <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:700}}><RelPar s={detailRound.total} p={detailRound.par}/></div><div style={{fontSize:9,color:C.muted}}>To Par</div></div>
+              {detailRound.totalPutts != null && <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:700,color:C.blue}}>{detailRound.totalPutts}</div><div style={{fontSize:9,color:C.muted}}>Putts</div></div>}
+              {detailRound.shotLogs && <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:700,color:C.red}}>{detailRound.shotLogs.reduce((s,h)=>s+(h||[]).filter(sh=>sh.type==="OB").length,0)}</div><div style={{fontSize:9,color:C.muted}}>OB</div></div>}
+              <div style={{textAlign:"center"}}><div style={{fontSize:20,fontWeight:700,color:"#ff6b00"}}>{detailRound.holeInOnes||0}</div><div style={{fontSize:9,color:C.muted}}>HIO</div></div>
+            </div>}
+
+            {/* Shot timeline */}
+            {!editingRound && detailRound.shotLogs && <div style={{padding:"12px 16px",maxHeight:400,overflowY:"auto"}}>
+              <div style={{fontWeight:600,fontSize:12,marginBottom:8}}>Shot Timeline</div>
+              {detailRound.shotLogs.map((holeLogs,hIdx)=>{
+                const holes = detailRound.courseHoles || allCourses.find(c=>c.name===detailRound.course)?.holes;
+                const par = holes?.[hIdx]?.par;
+                const range = holes?.[hIdx]?.range;
+                const score = detailRound.scores?.[hIdx];
+                if (!holeLogs || !holeLogs.length) return null;
+                return <div key={hIdx} style={{marginBottom:8,padding:8,background:C.card,borderRadius:8,border:`1px solid ${C.border}`}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                    <span style={{fontWeight:700,fontSize:11}}>Hole {hIdx+1} {par!=null&&<span style={{color:C.muted,fontWeight:400}}>· Par {par}{range?` · ${fmtR(range)}`:""}</span>}</span>
+                    {score!=null && <span style={{fontWeight:700,fontSize:12,color:par!=null&&score<par?C.greenLt:par!=null&&score>par?C.red:C.text}}>{score}</span>}
+                  </div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                    {holeLogs.map((shot,sIdx)=>{
+                      let bg=C.card2, color=C.text, label="";
+                      if(shot.type==="slide"){
+                        label = shot.dir==="sub"?`-${shot.val}`:`+${shot.val}`;
+                        bg = shot.dir==="sub"?"rgba(138,180,248,0.15)":"rgba(74,170,74,0.15)";
+                        color = shot.dir==="sub"?C.blue:C.greenLt;
+                      } else if(shot.type==="OB"){
+                        label="OB"; bg="rgba(239,68,68,0.15)"; color=C.red;
+                      } else if(shot.type==="putt"){
+                        label=shot.val==="Made"?"Putt: Made ✓":"Putt: Miss";
+                        bg=shot.val==="Made"?"rgba(74,170,74,0.15)":"rgba(138,180,248,0.15)";
+                        color=shot.val==="Made"?C.greenLt:C.blue;
+                      } else if(shot.type==="holeout"){
+                        label="Hole Out!"; bg="rgba(255,107,0,0.15)"; color="#ff6b00";
+                      }
+                      return <span key={sIdx} style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:bg,color}}>{label}</span>;
+                    })}
+                  </div>
+                </div>;
+              })}
+            </div>}
+
+            {!editingRound && !detailRound.shotLogs && <div style={{padding:"16px",textAlign:"center",color:C.muted,fontSize:12}}>Shot data not available for this round</div>}
+
+            {/* Delete button */}
+            {!editingRound && detailRound.player === me && <div style={{padding:"8px 16px 16px",borderTop:`1px solid ${C.border}`}}>
+              <button onClick={()=>{if(confirm(`Delete this round?`)){deleteRoundFromDB(detailRound.id);closeRoundDetail();}}} style={{background:"transparent",border:`1px solid rgba(239,68,68,0.3)`,color:C.red,borderRadius:8,padding:"8px 16px",cursor:"pointer",fontSize:11,width:"100%"}}>🗑 Delete Round</button>
+            </div>}
+          </div>
+        </div>
+      )}
+
+      {/* ═══ SHARE OVERLAY (Feature 17) ═══ */}
+      {shareOverlay && detailRound && (
+        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.9)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999,padding:16}} onClick={()=>setShareOverlay(false)}>
+          <div style={{background:C.card,borderRadius:16,padding:20,maxWidth:400,width:"100%",animation:"fadeIn 0.3s ease"}} onClick={e=>e.stopPropagation()}>
+            <div style={{fontWeight:700,fontSize:16,marginBottom:12}}>📤 Share Scorecard</div>
+            <div style={{display:"flex",gap:8,marginBottom:16}}>
+              <button onClick={()=>setShareMode("single")} style={{flex:1,...btnS(shareMode==="single"),padding:10,fontSize:12}}>My Card</button>
+              {getGroupRounds(detailRound).length > 0 && <button onClick={()=>setShareMode("group")} style={{flex:1,...btnS(shareMode==="group"),padding:10,fontSize:12}}>Group Card</button>}
+            </div>
+            <button onClick={generateShareCard} disabled={!shareMode} style={{...btnS(true),width:"100%",padding:12,fontSize:14,opacity:shareMode?1:0.5}}>📸 Generate & Share</button>
+            <button onClick={()=>setShareOverlay(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:12,marginTop:8,width:"100%",textAlign:"center"}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden share card render target */}
+      {shareOverlay && detailRound && shareMode && (()=>{
+        const holes = detailRound.courseHoles || allCourses.find(c=>c.name===detailRound.course)?.holes;
+        const groupRounds = shareMode === "group" ? getGroupRounds(detailRound) : [];
+        const allRoundsToShow = [detailRound, ...groupRounds];
+        const totalPar = holes ? holes.reduce((s,h)=>s+h.par,0) : detailRound.par;
+        return <div ref={shareRef} style={{position:"fixed",left:-9999,top:0,width:800,background:"#f5f0e0",fontFamily:"Georgia,serif",padding:0}}>
+          {/* Tan header */}
+          <div style={{background:"linear-gradient(135deg,#c4a960,#d4b84a)",padding:"16px 24px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontSize:28,fontWeight:900,textTransform:"uppercase",letterSpacing:3,color:"#1a2a00"}}>{detailRound.course}</div>
+              <div style={{fontSize:12,color:"#3a4a1a",marginTop:2}}>{detailRound.date}{detailRound.sealedMatchId?" · League Match":""}</div>
+            </div>
+            <div style={{background:"#1a2a00",color:"#d4b84a",padding:"4px 12px",borderRadius:4,fontSize:11,fontWeight:700}}>
+              {(detailRound.courseLevel||"").toUpperCase()}
+            </div>
+          </div>
+          {/* Scorecard tables */}
+          {[0,9].map(start => (
+            <table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+              <thead>
+                <tr style={{background:"#2d6a2d",color:"#fff"}}>
+                  <th style={{padding:"6px 8px",textAlign:"left",width:80}}>HOLE</th>
+                  {(holes||[]).slice(start,start+9).map((h,i)=><th key={i} style={{padding:"6px 4px",textAlign:"center",width:60}}>{start+i+1}</th>)}
+                  <th style={{padding:"6px 4px",textAlign:"center",width:60,fontWeight:900}}>{start===0?"OUT":"IN"}</th>
+                  {start===9&&<th style={{padding:"6px 4px",textAlign:"center",width:60,fontWeight:900}}>TOT</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {holes && <tr style={{background:"#e8f0d8"}}>
+                  <td style={{padding:"4px 8px",fontWeight:700,color:"#2d6a2d",fontSize:11}}>RANGE</td>
+                  {holes.slice(start,start+9).map((h,i)=><td key={i} style={{textAlign:"center",fontSize:10,color:"#5a7a3a"}}>{fmtR(h.range)}</td>)}
+                  <td style={{textAlign:"center",fontSize:10,color:"#5a7a3a"}}>{fmtRange(holes,start,start+9)}</td>
+                  {start===9&&<td style={{textAlign:"center",fontSize:10,color:"#5a7a3a"}}>{fmtRange(holes,0,18)}</td>}
+                </tr>}
+                {holes && <tr style={{background:"#fff"}}>
+                  <td style={{padding:"4px 8px",fontWeight:700}}>PAR</td>
+                  {holes.slice(start,start+9).map((h,i)=><td key={i} style={{textAlign:"center",fontWeight:600}}>{h.par}</td>)}
+                  <td style={{textAlign:"center",fontWeight:900}}>{calcPar(holes,start,start+9)}</td>
+                  {start===9&&<td style={{textAlign:"center",fontWeight:900,color:"#2d6a2d"}}>{totalPar}</td>}
+                </tr>}
+                {allRoundsToShow.map(rd=>{
+                  const sc = rd.scores||[];
+                  return <tr key={rd.id} style={{borderTop:"1px solid #ccc",background:"#fff"}}>
+                    <td style={{padding:"4px 8px",fontWeight:700,fontSize:12}}>{rd.player}</td>
+                    {sc.slice(start,start+9).map((v,i)=>{
+                      const par = holes?.[start+i]?.par;
+                      if(v==null)return<td key={i} style={{textAlign:"center",color:"#999"}}>—</td>;
+                      const diff=par!=null?v-par:0;const isHIO=v===1;
+                      let bStyle="none",bRadius=0,bWidth=1,bgC="transparent",fColor="#222";
+                      if(isHIO){bgC="#ff6b00";bRadius=50;fColor="#fff";}
+                      else if(diff<=-2){bStyle="solid";bRadius=50;bWidth=3;}
+                      else if(diff===-1){bStyle="solid";bRadius=50;bWidth=1;}
+                      else if(diff===1){bStyle="solid";bRadius=0;bWidth=1;}
+                      else if(diff>=2){bStyle="solid";bRadius=0;bWidth=3;}
+                      return <td key={i} style={{textAlign:"center",padding:3}}>
+                        <span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:26,height:26,borderRadius:bRadius,border:bStyle!=="none"?`${bWidth}px solid #333`:"none",background:bgC,color:fColor,fontWeight:700,fontSize:13}}>{v}</span>
+                      </td>;
+                    })}
+                    <td style={{textAlign:"center",fontWeight:900}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>
+                    {start===9&&<td style={{textAlign:"center",fontWeight:900,color:"#2d6a2d"}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          ))}
+          {/* Footer */}
+          <div style={{borderTop:"2px dashed #2d6a2d",margin:"12px 24px 0",padding:"10px 0",textAlign:"center"}}>
+            <span style={{letterSpacing:8,fontSize:14,fontWeight:700,color:"#2d6a2d"}}>S L I D E  G O L F</span>
+          </div>
+        </div>;
+      })()}
+
+      {/* ═══ PLAYER PROFILE OVERLAY (Feature 7) ═══ */}
+      {profilePlayer && (()=>{
+        const ps = playerStats.find(p=>p.name===profilePlayer);
+        const ach = computeAchievements(profilePlayer, rounds, leagueMatches, allCourses, me);
+        const puttsRounds = rounds.filter(r=>r.player===profilePlayer&&r.totalPutts!=null&&!isRoundSealed(r,leagueMatches,me));
+        const avgPutts = puttsRounds.length?Math.round(puttsRounds.reduce((s,r)=>s+r.totalPutts,0)/puttsRounds.length*10)/10:null;
+        return <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",display:"flex",alignItems:"flex-start",justifyContent:"center",zIndex:9997,overflowY:"auto",padding:"40px 16px"}} onClick={e=>{if(e.target===e.currentTarget)closePlayerProfile();}}>
+          <div style={{background:C.bg,borderRadius:16,border:`1px solid ${C.border}`,maxWidth:480,width:"100%",animation:"fadeIn 0.3s ease"}} onClick={e=>e.stopPropagation()}>
+            {/* Header */}
+            <div style={{padding:"20px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:22,fontWeight:900}}>{profilePlayer}</div>
+              <button onClick={closePlayerProfile} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:20}}>✕</button>
+            </div>
+            {/* Stats row */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,padding:"12px 16px",borderBottom:`1px solid ${C.border}`}}>
+              {[
+                [ps?.handicap!=null?ps.handicap:"-","HDCP",C.greenLt],
+                [ps?.rounds||0,"Rounds",C.text],
+                [ps?.best??"-","Best",C.text],
+                [ps?.avg??"-","Avg",C.text],
+                [ps?.holeInOnes||0,"HIOs","#ff6b00"],
+                [avgPutts??"-","Avg Putts",C.blue]
+              ].map(([v,l,c],i)=><div key={i} style={{textAlign:"center",padding:4}}><div style={{fontSize:16,fontWeight:700,color:c}}>{v}</div><div style={{fontSize:8,color:C.muted}}>{l}</div></div>)}
+            </div>
+            {/* Achievements */}
+            <div style={{padding:"12px 16px"}}>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>🏅 Achievements</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                {[
+                  ["🎯",`${ach.totalHIO} HIOs`,ach.hioMilestone?`${ach.hioMilestone}+ tier`:"","#ff6b00"],
+                  ["🏌️",`${ach.roundsPlayed} Rounds`,ach.roundsMilestone?`${ach.roundsMilestone}+ tier`:"",C.greenLt],
+                  ["🗺️",`${ach.coursesPlayed} Courses`,ach.coursesMilestone?`${ach.coursesMilestone}+ tier`:"",C.blue],
+                  ["🔥",`League Wins`,`${ach.leagueWinStreak.current} cur / ${ach.leagueWinStreak.best} best`,C.gold],
+                  ["📉","Under Par",`${ach.underParStreak.current} cur / ${ach.underParStreak.best} best`,C.greenLt],
+                  ["🦅",`Birdies (rd)`,`Best: ${ach.mostBirdies}`,C.greenLt],
+                  ["💀","Match Win",`Biggest: ${ach.biggestWin}`,C.red],
+                  ["⛳","Best to Par",ach.bestToPar!=null?(ach.bestToPar>0?`+${ach.bestToPar}`:ach.bestToPar===0?"E":String(ach.bestToPar)):"-",C.greenLt],
+                ].map(([emoji,title,sub,color],i)=><div key={i} style={{background:C.card,borderRadius:8,padding:"8px 10px",border:`1px solid ${C.border}`}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:16}}>{emoji}</span>
+                    <div><div style={{fontSize:11,fontWeight:700,color}}>{title}</div><div style={{fontSize:9,color:C.muted}}>{sub}</div></div>
+                  </div>
+                </div>)}
+              </div>
+            </div>
+            {/* Course Bests */}
+            {Object.keys(ach.courseBests).length>0 && <div style={{padding:"0 16px 12px"}}>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>🏟️ Course Bests</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                {Object.entries(ach.courseBests).map(([course,data])=><div key={course} style={{background:C.card,borderRadius:6,padding:"6px 10px",border:`1px solid ${C.border}`,fontSize:11}}>
+                  <div style={{fontWeight:600,fontSize:10}}>{course}</div>
+                  <div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
+                    <span style={{fontWeight:700}}>{data.total}</span>
+                    <RelPar s={data.total} p={data.par}/>
+                  </div>
+                </div>)}
+              </div>
+            </div>}
+            {/* Recent rounds */}
+            {ach.recentRounds.length>0 && <div style={{padding:"0 16px 16px"}}>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>📋 Recent Rounds</div>
+              {ach.recentRounds.map(r=><div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:12,cursor:"pointer"}} onClick={()=>openRoundDetail(r)}>
+                <div><span style={{fontWeight:600}}>{r.course}</span><span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.date}</span></div>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></div>
+              </div>)}
+            </div>}
+          </div>
+        </div>;
+      })()}
+
+      {/* ═══ NEW COURSE RECORD CELEBRATION (Feature 2) ═══ */}
+      {newRecordInfo && (
+        <div style={{
+          position:"fixed", top:0, left:0, right:0, bottom:0,
+          background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"center",
+          justifyContent:"center", zIndex:9999, animation:"fadeIn 0.5s ease"
+        }} onClick={dismissRecord}>
+          <div style={{
+            background:"linear-gradient(135deg,#1a2a00,#2a3a00,#1a2a00)",
+            borderRadius:20, padding:32, border:"2px solid #d4b84a",
+            textAlign:"center", maxWidth:340, width:"90%",
+            boxShadow:"0 0 60px rgba(212,184,74,0.3)"
+          }}>
+            <div style={{fontSize:48}}>🏆</div>
+            <div style={{fontSize:11, color:"#d4b84a", textTransform:"uppercase", letterSpacing:4, marginTop:8}}>New Course Record</div>
+            <div style={{fontSize:28, fontWeight:900, color:"#fff", marginTop:8}}>{newRecordInfo.player}</div>
+            <div style={{fontSize:14, color:"#d4b84a", marginTop:4}}>{newRecordInfo.course}</div>
+            <div style={{display:"flex", justifyContent:"center", alignItems:"center", gap:8, marginTop:16}}>
+              <span style={{fontSize:40, fontWeight:900, color:"#fff"}}>{newRecordInfo.newScore}</span>
+              <RelPar s={newRecordInfo.newScore} p={newRecordInfo.newPar}/>
+            </div>
+            {newRecordInfo.oldRecord ? (
+              <div style={{marginTop:12, fontSize:12, color:C.muted}}>Previous: {newRecordInfo.oldRecord.total} — {newRecordInfo.oldRecord.player}</div>
+            ) : (
+              <div style={{marginTop:12, fontSize:12, color:"#d4b84a"}}>First record set on this course!</div>
+            )}
+            <div style={{marginTop:20, fontSize:11, color:C.muted}}>Tap anywhere to continue</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
