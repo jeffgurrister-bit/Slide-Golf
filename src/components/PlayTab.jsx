@@ -13,11 +13,75 @@ export default function PlayTab({
   isLive, liveData, liveScoreMode, setLiveScoreMode, isSpectator, isKeeperHost,
   goLive, leaveLive,
   recordShot, undoShot, finishHole, goToPrevHole, saveRound, getRunningScore,
-  LiveBadge, ScorecardView
+  LiveBadge, ScorecardView,
+  // Feature 17
+  shareRef, generateShareCard, ScoreCell
 }) {
   const curPlayer = roundPlayers[curPlayerIdx];
   const curHS = holeState[curPlayer];
   const curHD = selCourse?.holes[curHole];
+
+  // Share card for review screen (pre-save, single player only)
+  function renderReviewShareCard(playerName) {
+    if (!selCourse || !shareRef) return null;
+    const sc = allScores[playerName] || Array(18).fill(null);
+    const totalPar = selCourse.holes.reduce((s,h)=>s+h.par,0);
+    return <div ref={shareRef} style={{position:"fixed",left:-9999,top:0,width:800,background:"#f5f0e0",fontFamily:"Georgia,serif",padding:0}}>
+      <div style={{background:"linear-gradient(135deg,#c4a960,#d4b84a)",padding:"16px 24px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:28,fontWeight:900,textTransform:"uppercase",letterSpacing:3,color:"#1a2a00"}}>{selCourse.name}</div>
+          <div style={{fontSize:12,color:"#3a4a1a",marginTop:2}}>{new Date().toISOString().split("T")[0]}</div>
+        </div>
+        <div style={{background:"#1a2a00",color:"#d4b84a",padding:"4px 12px",borderRadius:4,fontSize:11,fontWeight:700}}>{(selCourse.level||"").toUpperCase()}</div>
+      </div>
+      {[0,9].map(start => (
+        <table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+          <thead><tr style={{background:"#2d6a2d",color:"#fff"}}>
+            <th style={{padding:"6px 8px",textAlign:"left",width:80}}>HOLE</th>
+            {selCourse.holes.slice(start,start+9).map((h,i)=><th key={i} style={{padding:"6px 4px",textAlign:"center",width:60}}>{start+i+1}</th>)}
+            <th style={{padding:"6px 4px",textAlign:"center",width:60,fontWeight:900}}>{start===0?"OUT":"IN"}</th>
+            {start===9&&<th style={{padding:"6px 4px",textAlign:"center",width:60,fontWeight:900}}>TOT</th>}
+          </tr></thead>
+          <tbody>
+            <tr style={{background:"#e8f0d8"}}>
+              <td style={{padding:"4px 8px",fontWeight:700,color:"#2d6a2d",fontSize:11}}>RANGE</td>
+              {selCourse.holes.slice(start,start+9).map((h,i)=><td key={i} style={{textAlign:"center",fontSize:10,color:"#5a7a3a"}}>{fmtR(h.range)}</td>)}
+              <td style={{textAlign:"center",fontSize:10,color:"#5a7a3a"}}>{fmtRange(selCourse.holes,start,start+9)}</td>
+              {start===9&&<td style={{textAlign:"center",fontSize:10,color:"#5a7a3a"}}>{fmtRange(selCourse.holes,0,18)}</td>}
+            </tr>
+            <tr style={{background:"#fff"}}>
+              <td style={{padding:"4px 8px",fontWeight:700}}>PAR</td>
+              {selCourse.holes.slice(start,start+9).map((h,i)=><td key={i} style={{textAlign:"center",fontWeight:600}}>{h.par}</td>)}
+              <td style={{textAlign:"center",fontWeight:900}}>{calcPar(selCourse.holes,start,start+9)}</td>
+              {start===9&&<td style={{textAlign:"center",fontWeight:900,color:"#2d6a2d"}}>{totalPar}</td>}
+            </tr>
+            <tr style={{borderTop:"1px solid #ccc",background:"#fff"}}>
+              <td style={{padding:"4px 8px",fontWeight:700,fontSize:12}}>{playerName}</td>
+              {sc.slice(start,start+9).map((v,i)=>{
+                const par = selCourse.holes[start+i]?.par;
+                if(v==null)return<td key={i} style={{textAlign:"center",color:"#999"}}>—</td>;
+                const diff=par!=null?v-par:0;const isHIO=v===1;
+                let bStyle="none",bRadius=0,bWidth=1,bgC="transparent",fColor="#222";
+                if(isHIO){bgC="#ff6b00";bRadius=50;fColor="#fff";}
+                else if(diff<=-2){bStyle="solid";bRadius=50;bWidth=3;}
+                else if(diff===-1){bStyle="solid";bRadius=50;bWidth=1;}
+                else if(diff===1){bStyle="solid";bRadius=0;bWidth=1;}
+                else if(diff>=2){bStyle="solid";bRadius=0;bWidth=3;}
+                return <td key={i} style={{textAlign:"center",padding:3}}>
+                  <span style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:26,height:26,borderRadius:bRadius,border:bStyle!=="none"?`${bWidth}px solid #333`:"none",background:bgC,color:fColor,fontWeight:700,fontSize:13}}>{v}</span>
+                </td>;
+              })}
+              <td style={{textAlign:"center",fontWeight:900}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>
+              {start===9&&<td style={{textAlign:"center",fontWeight:900,color:"#2d6a2d"}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}
+            </tr>
+          </tbody>
+        </table>
+      ))}
+      <div style={{borderTop:"2px dashed #2d6a2d",margin:"12px 24px 0",padding:"10px 0",textAlign:"center"}}>
+        <span style={{letterSpacing:8,fontSize:14,fontWeight:700,color:"#2d6a2d"}}>S L I D E  G O L F</span>
+      </div>
+    </div>;
+  }
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -48,36 +112,35 @@ export default function PlayTab({
       </>}
 
       {/* ═══ SHOT-BY-SHOT ═══ */}
-      {selCourse&&playMode==="holes"&&curHD&&curHS&&<>
-        {showScorecard&&<ScorecardView/>}
+      {selCourse&&playMode==="holes"&&curHD&&<>
         <LiveBadge/>
-        {isSpectator&&<div style={{background:"rgba(138,180,248,0.1)",border:"1px solid rgba(138,180,248,0.3)",borderRadius:8,padding:10,textAlign:"center"}}><div style={{fontSize:13,fontWeight:600,color:C.blue}}>👀 Watching — Host is keeping score</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>Scores update automatically</div></div>}
-        {activeTourney&&<div style={{background:"linear-gradient(135deg,#1a2a4a,#2a3a5a)",borderRadius:10,padding:8,border:"1px solid #3a5a8a",textAlign:"center"}}><div style={{fontSize:10,color:C.blue}}>🏌️ {activeTourney.tournament} · R{activeTourney.round}</div></div>}
-        <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><div><div style={{fontSize:11,color:C.muted}}>HOLE {curHole+1} of 18</div><div style={{fontSize:20,fontWeight:700}}>Par {curHD.par} <span style={{fontSize:13,color:C.muted,fontWeight:400}}>Range: {fmtR(curHD.range)}</span></div></div><button onClick={()=>setShowScorecard(s=>!s)} style={{...btnS(false),padding:"4px 8px",fontSize:10}}>📋</button></div>
-          {/* Player tabs */}
-          {roundPlayers.length>1&&<div style={{display:"flex",gap:4,marginBottom:8,overflowX:"auto"}}>{roundPlayers.map((p,i)=>{const ps=holeState[p];const locked=isLive&&liveScoreMode==="self"&&p!==me;return<button key={p} onClick={()=>setCurPlayerIdx(i)} style={{padding:"6px 10px",borderRadius:8,border:i===curPlayerIdx?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:i===curPlayerIdx?C.accent:ps?.done?"rgba(74,170,74,0.08)":C.card2,color:i===curPlayerIdx?C.white:ps?.done?C.greenLt:locked?C.muted:C.text,cursor:"pointer",fontSize:11,fontWeight:600,whiteSpace:"nowrap",opacity:locked?0.5:1}}>{p} {ps?.done?"✓":""}{locked?" 🔒":""}</button>;})}</div>}
-          {/* Current player */}
-          <div style={{background:C.card2,borderRadius:8,padding:12,marginBottom:8}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{fontWeight:700,fontSize:14}}>{curPlayer}{isLive&&curPlayer!==me&&liveScoreMode==="self"?<span style={{fontSize:10,color:C.muted,marginLeft:6}}>🔒 view only</span>:""}</div><div style={{display:"flex",gap:8,alignItems:"center"}}>{!hideScores&&(()=>{const r=getRunningScore(curPlayer);const d=r.total-r.par;return<span style={{fontSize:11,color:d<0?C.greenLt:d>0?C.red:C.muted,fontWeight:700}}>{r.thru>0?`Thru ${r.thru}: `:""}{d===0?"E":d>0?`+${d}`:d}</span>;})()}</div></div>
-            {curHS.done?<div style={{textAlign:"center",padding:"12px 0"}}>{(()=>{const sn=scoreName(curHS.score,curHD.par,curHS.holeOut);const isHIO=curHS.score===1&&curHS.holeOut;return isHIO?<div style={{animation:"hioGlow 1.5s infinite"}}><div style={{fontSize:32,fontWeight:900,color:"#ff6b00"}}>🎯 HOLE IN ONE!!! 🔥</div><div style={{fontSize:18,fontWeight:700,color:"#ff6b00",marginTop:4}}>INCREDIBLE!!!</div></div>:<><div style={{fontSize:24,fontWeight:700,color:sn.c}}>{curHS.score} {sn.e}</div><div style={{fontSize:13,color:sn.c}}>{sn.l}</div></>;})()}</div>
-            :<>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"8px 0"}}><span style={{fontSize:12,color:C.muted}}>Total: <strong style={{color:C.text,fontSize:16}}>{curHS.total}</strong> / {curHD.range[0]}-{curHD.range[1]}</span>{curHS.onGreen&&<span style={{background:"rgba(74,170,74,0.2)",color:C.greenLt,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600}}>ON GREEN</span>}</div>
-              {(()=>{const need=calcNeed(curHS,curHD);if(!need)return null;return<div style={{background:"rgba(138,180,248,0.1)",border:"1px solid rgba(138,180,248,0.2)",borderRadius:6,padding:"6px 10px",marginBottom:8,textAlign:"center"}}><span style={{fontSize:12,color:C.blue,fontWeight:700}}>{need.dir==="sub"?"Subtract":"Need"}: {need.lo===need.hi?need.lo:`${need.lo}–${need.hi}`}</span></div>;})()}
-              {curHS.shots.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>{curHS.shots.map((s,i)=>(<span key={i} style={{background:s.type==="OB"?"rgba(239,68,68,0.2)":s.type==="putt"?"rgba(138,180,248,0.2)":"rgba(74,170,74,0.2)",color:s.type==="OB"?C.red:s.type==="putt"?C.blue:C.greenLt,padding:"2px 6px",borderRadius:4,fontSize:10}}>{s.type==="OB"?"OB":s.type==="putt"?`Putt: ${s.val}`:`${s.dir==="sub"?"-":"+"}${s.val}`}</span>))}</div>}
-              {!isSpectator&&!(isLive&&liveScoreMode==="self"&&curPlayer!==me)&&<>
-                {!curHS.onGreen?<>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:6}}>{[1,2,3,4,5,6,7,8,9].map(v=>(<button key={v} onClick={()=>recordShot(curPlayer,String(v))} style={{padding:"12px 0",borderRadius:6,border:`1px solid ${C.border}`,background:C.card,color:C.text,cursor:"pointer",fontSize:16,fontWeight:600}}>{curHS.total>curHD.range[1]?`-${v}`:v}</button>))}</div>
-                  <div style={{display:"flex",gap:4}}><button onClick={()=>recordShot(curPlayer,"OB")} style={{flex:1,padding:10,borderRadius:6,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:C.red,cursor:"pointer",fontWeight:600,fontSize:12}}>OB</button><button onClick={()=>recordShot(curPlayer,"HOLEOUT")} style={{flex:1,padding:10,borderRadius:6,border:`1px solid ${curHS.shots.length===0?"#ff6b00":C.gold}`,background:curHS.shots.length===0?"rgba(255,107,0,0.15)":"rgba(212,184,74,0.1)",color:curHS.shots.length===0?"#ff6b00":C.gold,cursor:"pointer",fontWeight:700,fontSize:curHS.shots.length===0?13:12}}>{curHS.shots.length===0?"🎯 Hole in One!":"🏌️ Hole Out!"}</button></div>
-                </>:<>
-                  <div style={{display:"flex",gap:8}}><button onClick={()=>recordShot(curPlayer,"MISS")} style={{flex:1,padding:14,borderRadius:8,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:C.red,cursor:"pointer",fontWeight:700,fontSize:16}}>Miss</button><button onClick={()=>recordShot(curPlayer,"MADE")} style={{flex:1,padding:14,borderRadius:8,border:`1px solid ${C.greenLt}`,background:"rgba(74,170,74,0.15)",color:C.greenLt,cursor:"pointer",fontWeight:700,fontSize:16}}>Made ✓</button></div>
-                  <div style={{textAlign:"center",fontSize:11,color:C.muted,marginTop:4}}>Putts: {curHS.putts}</div>
-                </>}
-                <button onClick={()=>undoShot(curPlayer)} disabled={!curHS.shots.length&&!curHS.done} style={{width:"100%",marginTop:6,padding:8,borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",color:C.muted,cursor:(curHS.shots.length||curHS.done)?"pointer":"default",fontSize:11,opacity:(curHS.shots.length||curHS.done)?1:0.3}}>↩ Undo</button>
-              </>}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><h2 style={{margin:0,fontSize:16}}>Hole {curHole+1} <span style={{fontWeight:400,color:C.muted}}>of 18</span></h2><div style={{fontSize:11,color:C.muted}}>Par {curHD.par} · Range {fmtR(curHD.range)}</div></div><button onClick={()=>setShowScorecard(s=>!s)} style={{...btnS(false),padding:"4px 10px",fontSize:11}}>📋</button></div>
+        {showScorecard&&<ScorecardView/>}
+        {roundPlayers.map((p,pIdx)=>{
+          const hs=holeState[p];if(!hs)return null;
+          const need=calcNeed(hs,curHD);
+          const isMyTurn=(!isLive||liveScoreMode==="keeper"||p===me);
+          const showPlayer=(!isLive||liveScoreMode==="keeper"||(liveScoreMode==="self"&&p===me));
+          if(!showPlayer)return null;
+          return<div key={p} style={{background:C.card,borderRadius:12,padding:12,border:`1px solid ${hs.done?C.greenLt:C.border}`,opacity:hs.done?0.7:1}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div style={{fontWeight:700,fontSize:14}}>{p}{isLive&&p!==me?<span style={{color:C.blue,fontSize:10}}> 📡</span>:""}</div>
+              {hs.done?<div style={{display:"flex",alignItems:"center",gap:4}}><span style={{fontWeight:700,fontSize:16}}>{hs.score}</span>{curHD&&<span style={{fontSize:11,color:scoreName(hs.score,curHD.par,hs.holeOut).c}}>{scoreName(hs.score,curHD.par,hs.holeOut).l}</span>}</div>
+              :need?<div style={{fontSize:12,color:need.dir==="add"?C.greenLt:C.blue,fontWeight:600}}>Need {need.lo===need.hi?need.lo:`${need.lo}-${need.hi}`} ({need.dir==="add"?"slide to range":"subtract to range"})</div>
+              :hs.onGreen?<div style={{fontSize:12,color:C.greenLt,fontWeight:600}}>🏁 On the Green</div>:null}
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:6}}>{hs.shots.map((s,i)=>{let c=C.text,bg=C.card2,label="";if(s.type==="slide"){label=s.dir==="sub"?`-${s.val}`:`+${s.val}`;bg=s.dir==="sub"?"rgba(138,180,248,0.15)":"rgba(74,170,74,0.15)";c=s.dir==="sub"?C.blue:C.greenLt;}else if(s.type==="OB"){label="OB";bg="rgba(239,68,68,0.15)";c=C.red;}else if(s.type==="putt"){label=s.val==="Made"?"✓":"Miss";bg=s.val==="Made"?"rgba(74,170,74,0.15)":"rgba(138,180,248,0.15)";c=s.val==="Made"?C.greenLt:C.blue;}else if(s.type==="holeout"){label="🎯 HOLE OUT";bg="rgba(255,107,0,0.15)";c="#ff6b00";}return<span key={i} style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:bg,color:c}}>{label}</span>;})}</div>
+            {!hs.done&&isMyTurn&&<>
+              {!hs.onGreen&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:4}}>
+                {[1,2,3,4,5,6,7,8,9,10,11,12].map(n=>(<button key={n} onClick={()=>recordShot(p,n)} style={{width:36,height:30,borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,cursor:"pointer",fontSize:12,fontWeight:700}}>{hs.total>curHD.range[1]?`-${n}`:`+${n}`}</button>))}
+                <button onClick={()=>recordShot(p,"OB")} style={{padding:"4px 8px",borderRadius:6,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:C.red,cursor:"pointer",fontSize:11,fontWeight:700}}>OB</button>
+                <button onClick={()=>recordShot(p,"HOLEOUT")} style={{padding:"4px 8px",borderRadius:6,border:"1px solid rgba(255,107,0,0.4)",background:"rgba(255,107,0,0.1)",color:"#ff6b00",cursor:"pointer",fontSize:11,fontWeight:700}}>🎯 Hole Out</button>
+              </div>}
+              {hs.onGreen&&<div style={{display:"flex",gap:4,marginBottom:4}}><button onClick={()=>recordShot(p,"MISS")} style={{flex:1,padding:10,borderRadius:8,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:C.red,cursor:"pointer",fontWeight:700}}>Putt: Miss</button><button onClick={()=>recordShot(p,"MADE")} style={{flex:1,padding:10,borderRadius:8,border:`1px solid ${C.greenLt}`,background:"rgba(74,170,74,0.1)",color:C.greenLt,cursor:"pointer",fontWeight:700}}>Putt: Made ✓</button></div>}
+              {hs.shots.length>0&&<button onClick={()=>undoShot(p)} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,padding:"4px 8px",borderRadius:4,cursor:"pointer",fontSize:10}}>↩ Undo</button>}
             </>}
-          </div>
-        </div>
+          </div>;
+        })}
         <div style={{display:"flex",gap:8}}>
           {curHole>0&&<button onClick={goToPrevHole} style={{...btnS(false),padding:"10px 16px",fontSize:12}}>← Hole {curHole}</button>}
           <button onClick={finishHole} style={{...btnS(true),flex:1,padding:14,fontSize:15}}>{curHole<17?`Hole ${curHole+1} Done →`:"Finish Round"}</button>
@@ -103,7 +166,13 @@ export default function PlayTab({
         <h2 style={{margin:0,fontSize:18}}>📋 Round Review</h2>
         <div style={{background:C.card,borderRadius:12,padding:12,border:`1px solid ${C.border}`,overflowX:"auto"}}>{[0,9].map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:9,marginBottom:start===0?6:0,minWidth:420}}><thead><tr style={{background:C.accent}}><th style={{padding:"4px 6px",textAlign:"left",minWidth:50}}>HOLE</th>{selCourse.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"3px 2px",textAlign:"center",minWidth:24}}>{h.num}</th>)}<th style={{padding:"3px 4px",textAlign:"center",minWidth:30}}>{start===0?"OUT":"IN"}</th>{start===9&&<th style={{padding:"3px 4px",textAlign:"center",minWidth:30}}>TOT</th>}</tr></thead><tbody><tr><td style={{padding:"2px 6px",fontWeight:600}}>PAR</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{selCourse.holes.reduce((s,h)=>s+h.par,0)}</td>}</tr>{roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);return<tr key={p} style={{borderTop:`1px solid ${C.border}`}}><td style={{padding:"2px 6px",fontWeight:600,fontSize:8}}>{p}</td>{selCourse.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const v=sc[idx];return<td key={h.num} style={{textAlign:"center",fontWeight:700,color:v===1?"#ff6b00":v!=null&&v<h.par?C.greenLt:v!=null&&v>h.par?"#ff6b6b":v!=null?C.text:C.muted}}>{v??"-"}</td>;})}<td style={{textAlign:"center",fontWeight:700}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}</tr>;})}</tbody></table>))}</div>
         {roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);const tot=sc.reduce((s,v)=>s+(v||0),0);const par=selCourse.holes.reduce((s,h)=>s+h.par,0);const hio=countHIO(sc);return<div key={p} style={{background:C.card,borderRadius:8,padding:10,border:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700}}>{p}</div>{useHdcp&&hdcps[p]&&<div style={{fontSize:10,color:C.blue}}>HDCP: {hdcps[p]} · Adj: {tot-hdcps[p]}</div>}</div><div style={{textAlign:"right"}}><div style={{fontSize:20,fontWeight:700}}>{tot} <RelPar s={tot} p={par}/></div>{hio>0&&<div style={{fontSize:10,color:"#ff6b00"}}>🎯 {hio} hole-in-one{hio>1?"s":""}</div>}</div></div>;})}
-        <div style={{display:"flex",gap:8}}><button onClick={()=>setPlayMode("setup")} style={{...btnS(false),padding:12}}>← Edit</button><button onClick={saveRound} style={{...btnS(true),flex:1,padding:14,fontSize:15}}>💾 Save Round</button></div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>setPlayMode("setup")} style={{...btnS(false),padding:12}}>← Edit</button>
+          <button onClick={saveRound} style={{...btnS(true),flex:1,padding:14,fontSize:15}}>💾 Save Round</button>
+          <button onClick={()=>{renderReviewShareCard(me);setTimeout(generateShareCard,100);}} style={{...btnS(false),padding:"12px 16px",fontSize:12}}>📤</button>
+        </div>
+        {/* Hidden share render for review screen */}
+        {renderReviewShareCard(me)}
       </>}
     </div>
   );
