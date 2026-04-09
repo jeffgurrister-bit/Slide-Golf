@@ -649,7 +649,7 @@ export default function App(){
               <div>
                 <div style={{fontWeight:700,fontSize:18}}>{detailRound.player}</div>
                 <div style={{fontSize:12,color:C.muted}}>{detailRound.course} · {detailRound.date}{detailRound.courseLevel&&<span style={{fontSize:9,fontWeight:700,marginLeft:6,color:detailRound.courseLevel==="Easy"?"#22c55e":detailRound.courseLevel==="Medium"?"#3b82f6":detailRound.courseLevel==="Hard"?"#f59e0b":"#ef4444"}}>{detailRound.courseLevel}</span>}{(detailRound.holeCount||detailRound.holesPlayed||18)===9&&<span style={{color:C.blue,marginLeft:6}}>9H {detailRound.nineType==="back"?"Back":"Front"}</span>}</div>
-                {detailRound.sealedMatchId && <div style={{fontSize:10,color:C.gold,marginTop:2}}>⚡ League Match</div>}
+                {detailRound.sealedMatchId && (()=>{const m=(leagueMatches||[]).find(x=>x.id===detailRound.sealedMatchId);const t=m?.roundType;return<div style={{fontSize:10,color:t==="F"?C.gold:C.greenLt,marginTop:2}}>{t==="F"?"🏆 Championship Round":t==="SF"||t==="QF"?"⚡ Playoff Match":"⚡ League Match"}</div>;})()}
               </div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                 {!editingRound && detailRound.player === me && <button onClick={()=>{setEditingRound(true);setEditScores([...(detailRound.scores||Array(18).fill(null))]);}} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>✏️ Edit</button>}
@@ -941,8 +941,8 @@ export default function App(){
             {/* Recent rounds */}
             {ach.recentRounds.length>0 && <div style={{padding:"0 16px 16px"}}>
               <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>📋 Recent Rounds</div>
-              {ach.recentRounds.map(r=>{const lvl=r.courseLevel;const lvlColor=lvl==="Easy"?"#22c55e":lvl==="Medium"?"#3b82f6":lvl==="Hard"?"#f59e0b":"#ef4444";return<div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:12,cursor:"pointer"}} onClick={()=>openRoundDetail(r)}>
-                <div><span style={{fontWeight:600}}>{r.course}</span>{lvl&&<span style={{fontSize:8,fontWeight:700,color:lvlColor,marginLeft:4}}>{lvl}</span>}{r.sealedMatchId&&<span style={{fontSize:8,color:C.gold,marginLeft:3}}>⚡</span>}<span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.date}</span></div>
+              {ach.recentRounds.map(r=>{const lvl=r.courseLevel;const lvlColor=lvl==="Easy"?"#22c55e":lvl==="Medium"?"#3b82f6":lvl==="Hard"?"#f59e0b":"#ef4444";const match=r.sealedMatchId?(leagueMatches||[]).find(m=>m.id===r.sealedMatchId):null;const matchTag=match?(match.roundType==="F"?"🏆":(match.roundType==="SF"||match.roundType==="QF")?"⚡PO":"⚡"):null;const matchColor=match?.roundType==="F"?C.gold:C.greenLt;return<div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:12,cursor:"pointer"}} onClick={()=>openRoundDetail(r)}>
+                <div><span style={{fontWeight:600}}>{r.course}</span>{lvl&&<span style={{fontSize:8,fontWeight:700,color:lvlColor,marginLeft:4}}>{lvl}</span>}{matchTag&&<span style={{fontSize:8,color:matchColor,marginLeft:3}}>{matchTag}</span>}<span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.date}</span></div>
                 <div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></div>
               </div>;})}
             </div>}
