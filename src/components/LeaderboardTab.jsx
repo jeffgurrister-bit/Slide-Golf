@@ -1,12 +1,14 @@
 import { C } from "../utils/theme.js";
 import { RelPar, countHIO, isRoundSealed, computeAchievements } from "../utils/helpers.jsx";
 
-export default function LeaderboardTab({ me, playerStats, rounds, deleteRoundFromDB, leagueMatches, openRoundDetail, openPlayerProfile, allCourses }) {
-  // Avg putts per player
+export default function LeaderboardTab({ me, playerStats, rounds, deleteRoundFromDB, leagueMatches, openRoundDetail, openPlayerProfile, allCourses, lbHoleFilter, setLbHoleFilter }) {
+  // Avg putts per player (filtered by hole count)
   const getAvgPutts = (name) => {
-    const pr = rounds.filter(r => r.player === name && r.totalPutts != null && !isRoundSealed(r, leagueMatches, me));
+    const pr = rounds.filter(r => r.player === name && r.totalPutts != null && (r.holeCount||r.holesPlayed||18)===lbHoleFilter && !isRoundSealed(r, leagueMatches, me));
     return pr.length ? Math.round(pr.reduce((s, r) => s + r.totalPutts, 0) / pr.length * 10) / 10 : null;
   };
+
+  const filteredRounds = rounds.filter(r => (r.holeCount||r.holesPlayed||18)===lbHoleFilter);
 
   // Achievement leaders
   const achievementLeaders = (() => {
@@ -37,7 +39,13 @@ export default function LeaderboardTab({ me, playerStats, rounds, deleteRoundFro
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
-      <h2 style={{margin:0,fontSize:18}}>📊 Leaderboard</h2>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <h2 style={{margin:0,fontSize:18}}>📊 Leaderboard</h2>
+        <div style={{display:"flex",gap:4}}>
+          <button onClick={()=>setLbHoleFilter(18)} style={{padding:"4px 12px",borderRadius:6,border:lbHoleFilter===18?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:lbHoleFilter===18?C.accent:"transparent",color:lbHoleFilter===18?C.white:C.muted,cursor:"pointer",fontSize:11,fontWeight:600}}>18H</button>
+          <button onClick={()=>setLbHoleFilter(9)} style={{padding:"4px 12px",borderRadius:6,border:lbHoleFilter===9?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:lbHoleFilter===9?C.accent:"transparent",color:lbHoleFilter===9?C.white:C.muted,cursor:"pointer",fontSize:11,fontWeight:600}}>9H</button>
+        </div>
+      </div>
 
       {/* Player Rankings */}
       <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:440}}><thead><tr style={{background:C.accent}}><th style={{padding:"8px 6px",textAlign:"left"}}>#</th><th style={{padding:"8px 4px",textAlign:"left"}}>Player</th><th style={{padding:"8px 4px",textAlign:"center"}}>HDCP</th><th style={{padding:"8px 4px",textAlign:"center"}}>Rnds</th><th style={{padding:"8px 4px",textAlign:"center"}}>Best</th><th style={{padding:"8px 4px",textAlign:"center"}}>Avg</th><th style={{padding:"8px 4px",textAlign:"center"}}>🎯</th><th style={{padding:"8px 4px",textAlign:"center",color:C.blue}}>Putts</th></tr></thead><tbody>{playerStats.map((p,i)=>{
@@ -46,10 +54,10 @@ export default function LeaderboardTab({ me, playerStats, rounds, deleteRoundFro
       })}</tbody></table></div></div>
 
       {/* All Rounds */}
-      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8}}>All Rounds</div>{rounds.map(r=>{const hio=r.holeInOnes||countHIO(r.scores)||0;const sealed=isRoundSealed(r,leagueMatches,me);return<div key={r.id} onClick={()=>openRoundDetail(r)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:12,cursor:"pointer"}}><div><span style={{fontWeight:600}}>{r.player}</span><span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.course}</span><span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.date}</span></div><div style={{display:"flex",gap:6,alignItems:"center"}}>{sealed?<span style={{color:C.muted,fontSize:11}}>🔒 Sealed</span>:r.hidden?<span style={{color:C.muted,fontSize:11}}>🙈</span>:<><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></>}{!sealed&&hio>0&&<span style={{fontSize:10,color:"#ff6b00"}}>🎯{hio}</span>}<button onClick={e=>{e.stopPropagation();if(confirm(`Delete ${r.player}'s round?`))deleteRoundFromDB(r.id);}} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:10,opacity:0.5}}>🗑</button></div></div>;})}</div>
+      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8}}>All Rounds ({lbHoleFilter}H)</div>{filteredRounds.map(r=>{const hio=r.holeInOnes||countHIO(r.scores)||0;const sealed=isRoundSealed(r,leagueMatches,me);const hc=r.holeCount||r.holesPlayed||18;return<div key={r.id} onClick={()=>openRoundDetail(r)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:12,cursor:"pointer"}}><div><span style={{fontWeight:600}}>{r.player}</span><span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.course}</span>{hc===9&&<span style={{color:C.blue,fontSize:9,marginLeft:4}}>9H</span>}<span style={{color:C.muted,fontSize:10,marginLeft:6}}>{r.date}</span></div><div style={{display:"flex",gap:6,alignItems:"center"}}>{sealed?<span style={{color:C.muted,fontSize:11}}>🔒 Sealed</span>:r.hidden?<span style={{color:C.muted,fontSize:11}}>🙈</span>:<><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></>}{!sealed&&hio>0&&<span style={{fontSize:10,color:"#ff6b00"}}>🎯{hio}</span>}<button onClick={e=>{e.stopPropagation();if(confirm(`Delete ${r.player}'s round?`))deleteRoundFromDB(r.id);}} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:10,opacity:0.5}}>🗑</button></div></div>;})}</div>
 
-      {/* Achievement Leaderboard (Feature 7) */}
-      <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}>
+      {/* Achievement Leaderboard (18H only) */}
+      {lbHoleFilter===18 && <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}>
         <div style={{padding:"10px 14px",background:C.accent,fontWeight:700,fontSize:13}}>🏆 Achievement Leaders</div>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
           <thead><tr style={{background:C.card2}}>
@@ -67,7 +75,7 @@ export default function LeaderboardTab({ me, playerStats, rounds, deleteRoundFro
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
     </div>
   );
 }
