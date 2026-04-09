@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { C, btnS, smallInput } from "../utils/theme.js";
 import { calcPar, fmtR, fmtRange, calcNeed, scoreName, countHIO, RelPar } from "../utils/helpers.jsx";
 
@@ -22,6 +23,27 @@ export default function PlayTab({
   const curPlayer = roundPlayers[curPlayerIdx];
   const curHS = holeState[curPlayer];
   const curHD = selCourse?.holes[curHole];
+
+  // Auto-flip from front 9 to back 9 in quick score (18-hole only)
+  useEffect(()=>{
+    if(playMode!=="quick"||holeCount!==18||nine!==0)return;
+    const front9Complete=roundPlayers.length>0&&roundPlayers.every(p=>{
+      const sc=allScores[p]||[];
+      return sc.slice(0,9).every(v=>v!=null);
+    });
+    if(front9Complete)setNine(1);
+  },[allScores,playMode,holeCount,nine,roundPlayers]);
+
+  // Check if all played holes have scores (for Review button)
+  const allHolesFilled=(()=>{
+    if(!roundPlayers.length)return false;
+    const startIdx=holeCount===9?(nineType==="back"?9:0):0;
+    const endIdx=startIdx+holeCount;
+    return roundPlayers.every(p=>{
+      const sc=allScores[p]||[];
+      return sc.slice(startIdx,endIdx).every(v=>v!=null);
+    });
+  })();
 
   // Share card for review screen (pre-save, single player only)
   function renderReviewShareCard(playerName) {
@@ -178,7 +200,8 @@ export default function PlayTab({
           </tbody></table></div>;
         })()}
         {roundPlayers.map(p=>{const sc=allScores[p]||Array(18).fill(null);const startIdx=holeCount===9?(nineType==="back"?9:0):0;const endIdx=startIdx+holeCount;const tot=sc.slice(startIdx,endIdx).reduce((s,v)=>s+(v||0),0);const par=selCourse.holes.slice(startIdx,endIdx).reduce((s,h)=>s+h.par,0);return tot>0&&<div key={p} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",fontSize:12}}><span style={{fontWeight:600}}>{p}</span><span><strong>{tot}</strong> <RelPar s={tot} p={par}/></span></div>;})}
-        <button onClick={()=>setPlayMode("review")} style={{...btnS(true),width:"100%",padding:14,fontSize:15,marginTop:8}}>Review & Save</button>
+        {allHolesFilled?<button onClick={()=>setPlayMode("review")} style={{...btnS(true),width:"100%",padding:14,fontSize:15,marginTop:8}}>Review & Save</button>
+        :<div style={{textAlign:"center",padding:"8px 0",fontSize:12,color:C.muted,marginTop:8}}>Fill in all {holeCount} holes to review & save</div>}
       </>}
 
       {/* ═══ REVIEW ═══ */}
