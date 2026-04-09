@@ -29,38 +29,7 @@ export default function LeagueTab({
   const canPlayS1Final = !s1FinalComplete && s1FinalP1 && s1FinalP2 && (me === s1FinalP1 || me === s1FinalP2);
   const s1Status = s1FinalComplete ? "Complete" : "Finals";
 
-  // ─── LEAGUE SELECTOR ───────────────────────────────────
-  const LeagueSelector = () => (
-    <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
-      <select value={selectedLeague||"s1"} onChange={e=>{setSelectedLeague(e.target.value);setShowCreate(false);setShowJoinCode(false);}} style={{flex:1,padding:"8px 12px",borderRadius:8,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:13,fontWeight:600,outline:"none"}}>
-        <option value="s1">🏆 Season 1{s1FinalComplete?" — Champ: "+s1Champion:""}</option>
-        {myLeagues.map(lg=>(<option key={lg.id} value={lg.id}>{lg.status==="complete"?"🏆":"⚡"} {lg.name} ({lg.players?.length||0}p)</option>))}
-      </select>
-      <button onClick={()=>{setShowCreate(c=>!c);setShowJoinCode(false);}} style={{...btnS(true),padding:"8px 12px",fontSize:11,whiteSpace:"nowrap"}}>+ New</button>
-      <button onClick={()=>{setShowJoinCode(j=>!j);setShowCreate(false);}} style={{...btnS(false),padding:"8px 12px",fontSize:11,whiteSpace:"nowrap"}}>Join</button>
-    </div>
-  );
-
-  // ─── CREATE LEAGUE ─────────────────────────────────────
-  const CreateForm = () => (
-    <div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.greenLt}`,marginBottom:10}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontWeight:700,fontSize:15}}>Create New League</div><button onClick={()=>setShowCreate(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:16}}>✕</button></div>
-      <div style={{display:"flex",flexDirection:"column",gap:10}}>
-        <div><div style={{fontSize:11,color:C.muted,marginBottom:4}}>League Name</div><input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Season 2" style={inputS}/></div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:600,fontSize:13}}>📊 Handicaps</div><div style={{fontSize:10,color:C.muted}}>Adjusted scoring</div></div><button onClick={()=>setNewHdcp(h=>!h)} style={{width:48,height:26,borderRadius:13,border:"none",cursor:"pointer",position:"relative",background:newHdcp?C.greenLt:C.card2,transition:"all 0.2s"}}><div style={{width:20,height:20,borderRadius:10,background:C.white,position:"absolute",top:3,left:newHdcp?25:3,transition:"left 0.2s"}}/></button></div>
-        <button onClick={async()=>{if(!newName.trim())return;await createLeague(newName.trim(),newHdcp);setNewName("");setNewHdcp(false);setShowCreate(false);}} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
-        <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>You'll get an invite code to share</div>
-      </div>
-    </div>
-  );
-
-  // ─── JOIN LEAGUE ───────────────────────────────────────
-  const JoinForm = () => (
-    <div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.blue}`,marginBottom:10}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontWeight:700,fontSize:15}}>Join a League</div><button onClick={()=>setShowJoinCode(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:16}}>✕</button></div>
-      <div style={{display:"flex",gap:8}}><input value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase().slice(0,6))} placeholder="CODE" maxLength={6} style={{...inputS,textAlign:"center",fontSize:18,letterSpacing:4,fontWeight:700}}/><button onClick={async()=>{if(!joinCode.trim())return;await joinLeagueByCode(joinCode.trim());setJoinCode("");setShowJoinCode(false);}} style={{...btnS(true),whiteSpace:"nowrap"}}>Join</button></div>
-    </div>
-  );
+  // ─── (forms inlined in render below) ───────────────────
 
   // ─── S1 CHAMPIONSHIP PRE-MATCH ────────────────────────
   const ChampPreMatch = () => {
@@ -178,9 +147,27 @@ export default function LeagueTab({
 
   // ─── MAIN RENDER ──────────────────────────────────────
   return (<div style={{display:"flex",flexDirection:"column",gap:14}}>
-    <LeagueSelector/>
-    {showCreate&&<CreateForm/>}
-    {showJoinCode&&<JoinForm/>}
+    <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:4}}>
+      <select value={selectedLeague||"s1"} onChange={e=>{setSelectedLeague(e.target.value);setShowCreate(false);setShowJoinCode(false);}} style={{flex:1,padding:"8px 12px",borderRadius:8,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:13,fontWeight:600,outline:"none"}}>
+        <option value="s1">🏆 Season 1{s1FinalComplete?" — Champ: "+s1Champion:""}</option>
+        {myLeagues.map(lg=>(<option key={lg.id} value={lg.id}>{lg.status==="complete"?"🏆":"⚡"} {lg.name} ({lg.players?.length||0}p)</option>))}
+      </select>
+      <button onClick={()=>{setShowCreate(c=>!c);setShowJoinCode(false);}} style={{...btnS(true),padding:"8px 12px",fontSize:11,whiteSpace:"nowrap"}}>+ New</button>
+      <button onClick={()=>{setShowJoinCode(j=>!j);setShowCreate(false);}} style={{...btnS(false),padding:"8px 12px",fontSize:11,whiteSpace:"nowrap"}}>Join</button>
+    </div>
+    {showCreate&&<div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.greenLt}`,marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontWeight:700,fontSize:15}}>Create New League</div><button onClick={()=>setShowCreate(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:16}}>✕</button></div>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        <div><div style={{fontSize:11,color:C.muted,marginBottom:4}}>League Name</div><input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Season 2" style={inputS}/></div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:600,fontSize:13}}>📊 Handicaps</div><div style={{fontSize:10,color:C.muted}}>Adjusted scoring</div></div><button onClick={()=>setNewHdcp(h=>!h)} style={{width:48,height:26,borderRadius:13,border:"none",cursor:"pointer",position:"relative",background:newHdcp?C.greenLt:C.card2,transition:"all 0.2s"}}><div style={{width:20,height:20,borderRadius:10,background:C.white,position:"absolute",top:3,left:newHdcp?25:3,transition:"left 0.2s"}}/></button></div>
+        <button onClick={async()=>{if(!newName.trim())return;await createLeague(newName.trim(),newHdcp);setNewName("");setNewHdcp(false);setShowCreate(false);}} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
+        <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>You'll get an invite code to share</div>
+      </div>
+    </div>}
+    {showJoinCode&&<div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.blue}`,marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontWeight:700,fontSize:15}}>Join a League</div><button onClick={()=>setShowJoinCode(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:16}}>✕</button></div>
+      <div style={{display:"flex",gap:8}}><input value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase())} placeholder="Enter code..." maxLength={6} style={{...inputS,flex:1,letterSpacing:4,textAlign:"center",fontSize:18,fontWeight:700}}/><button onClick={async()=>{if(!joinCode.trim())return;await joinLeagueByCode(joinCode.trim());setJoinCode("");setShowJoinCode(false);}} style={{...btnS(true),padding:"8px 16px",fontSize:13}}>Join</button></div>
+    </div>}
     {isSeason1?<Season1View/>:curLeague?(curLeague.status==="lobby"?<Lobby/>:<Active/>):<div style={{textAlign:"center",padding:30,color:C.muted}}>No league selected. Create or join one above.</div>}
   </div>);
 }
