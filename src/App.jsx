@@ -306,6 +306,7 @@ export default function App(){
   function goToPrevHole(){const firstHole=holeCount===9&&nineType==="back"?9:0;if(curHole<=firstHole)return;saveCurrentHole();navigateToHole(curHole-1);}
 
   async function saveRound(){
+   try{
     const startIdx=holeCount===9&&nineType==="back"?9:0;
     const endIdx=startIdx+holeCount;
     const playedHoles=selCourse.holes.slice(startIdx,endIdx);
@@ -400,6 +401,7 @@ export default function App(){
       else setTab("leaderboard");
     }
     if(isLive)leaveLive();
+   }catch(e){alert("Save error: "+e.message);console.error(e);}
   }
 
   function dismissRecord() {
