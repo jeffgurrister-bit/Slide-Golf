@@ -143,8 +143,8 @@ export default function PlayTab({
             <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:6}}>{hs.shots.map((s,i)=>{let c=C.text,bg=C.card2,label="";if(s.type==="slide"){label=s.dir==="sub"?`-${s.val}`:`+${s.val}`;bg=s.dir==="sub"?"rgba(138,180,248,0.15)":"rgba(74,170,74,0.15)";c=s.dir==="sub"?C.blue:C.greenLt;}else if(s.type==="OB"){label="OB";bg="rgba(239,68,68,0.15)";c=C.red;}else if(s.type==="putt"){label=s.val==="Made"?"✓":"Miss";bg=s.val==="Made"?"rgba(74,170,74,0.15)":"rgba(138,180,248,0.15)";c=s.val==="Made"?C.greenLt:C.blue;}else if(s.type==="holeout"){label="🎯 HOLE OUT";bg="rgba(255,107,0,0.15)";c="#ff6b00";}return<span key={i} style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:bg,color:c}}>{label}</span>;})}</div>
             {!hs.done&&isMyTurn&&<>
               {!hs.onGreen&&<div style={{marginBottom:4}}>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:6}}>
-                  {[1,2,3,4,5,6,7,8,9,10,11,12].map(n=>(<button key={n} onClick={()=>recordShot(p,n)} style={{height:44,borderRadius:8,border:`1px solid ${C.border}`,background:C.card2,color:C.text,cursor:"pointer",fontSize:16,fontWeight:700}}>{n}</button>))}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:6}}>
+                  {[1,2,3,4,5,6,7,8,9].map(n=>(<button key={n} onClick={()=>recordShot(p,n)} style={{height:48,borderRadius:8,border:`1px solid ${C.border}`,background:C.card2,color:C.text,cursor:"pointer",fontSize:18,fontWeight:700}}>{n}</button>))}
                 </div>
                 <div style={{display:"flex",gap:6}}>
                   <button onClick={()=>recordShot(p,"OB")} style={{flex:1,height:40,borderRadius:8,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:C.red,cursor:"pointer",fontSize:13,fontWeight:700}}>OB</button>
