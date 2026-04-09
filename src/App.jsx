@@ -321,6 +321,10 @@ export default function App(){
       const logs = allShotLogs[p] || [];
       const playedLogs = logs.slice(startIdx,endIdx);
       const derivedPutts = playedLogs.reduce((sum, holeLogs) => sum + (holeLogs || []).filter(s => s.type === "putt").length, 0) || null;
+      // Firestore doesn't support nested arrays — convert to map {0: [...shots], 1: [...shots]}
+      const hasShots = playedLogs.some(h => h && h.length > 0);
+      const shotLogsMap = {};
+      if(hasShots) playedLogs.forEach((shots, i) => { shotLogsMap[String(i)] = shots || []; });
 
       if(p===me||!isLive||isKeeperHost){
         await saveRoundToDB({
@@ -332,7 +336,7 @@ export default function App(){
           diff:total-totalPar, holeInOnes:hio,
           hidden:hideScores, hdcp:hd, adjTotal:hd?total-hd:null,
           sealedMatchId:activeLeagueMatch&&activeLeagueMatch.matchId!=="s1-final"?activeLeagueMatch.matchId:null,
-          shotLogs: playedLogs.length?playedLogs:null,
+          shotLogs: hasShots ? shotLogsMap : null,
           totalPutts: derivedPutts,
           courseHoles: playedHoles
         });
@@ -462,7 +466,15 @@ export default function App(){
   }
 
   // ─── FEATURE FUNCTIONS ─────────────────────────────────
-  function openRoundDetail(round) { setDetailRound(round); setEditingRound(false); setEditScores(null); setShareOverlay(false); }
+  function openRoundDetail(round) {
+    // Normalize shotLogs: convert map format {"0":[...],"1":[...]} to array format [[...],[...]]
+    const normalized = {...round};
+    if(round.shotLogs && !Array.isArray(round.shotLogs)){
+      const hc = round.holeCount || round.holesPlayed || 18;
+      normalized.shotLogs = Array.from({length:hc},(_,i)=>round.shotLogs[String(i)]||[]);
+    }
+    setDetailRound(normalized); setEditingRound(false); setEditScores(null); setShareOverlay(false);
+  }
   function closeRoundDetail() { setDetailRound(null); setEditingRound(false); setEditScores(null); setShareOverlay(false); }
   function openPlayerProfile(name) { setProfilePlayer(name); }
   function closePlayerProfile() { setProfilePlayer(null); }
@@ -490,10 +502,20 @@ export default function App(){
       if (!confirm("This round is part of a league match. Editing will update the match result. Continue?")) return;
     }
 
+    // Convert shotLogs back to map format for Firestore
+    let shotLogsForSave = null;
+    if (newShotLogs) {
+      const hasAny = newShotLogs.some(h => h && h.length > 0);
+      if (hasAny) {
+        shotLogsForSave = {};
+        newShotLogs.forEach((shots, i) => { shotLogsForSave[String(i)] = shots || []; });
+      }
+    }
+
     await updateDoc(doc(db, "rounds", detailRound.id), {
       scores: editScores, total: newTotal, diff: newDiff,
       holesPlayed: newHolesPlayed, holeInOnes: newHIO,
-      shotLogs: newShotLogs, totalPutts: newTotalPutts,
+      shotLogs: shotLogsForSave, totalPutts: newTotalPutts,
       adjTotal: newAdjTotal
     });
 
