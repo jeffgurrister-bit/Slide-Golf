@@ -31,6 +31,23 @@ export function isRoundSealed(round, leagueMatches, me) {
   return !(match.resultsSeenBy || []).includes(me);
 }
 
+// Returns the round's matchType, falling back to "championship" for hidden
+// Nebraska rounds played by S1 finalists (covers older rounds saved before
+// matchType was tracked, or live-round joiners whose activeLeagueMatch
+// wasn't propagated at save time).
+const S1_FINALISTS = new Set(["Jeff Gurrister", "Jimmie Perkins"]);
+export function effectiveMatchType(round) {
+  if (round?.matchType) return round.matchType;
+  if (round?.hidden && round?.course === "Nebraska" && S1_FINALISTS.has(round?.player)) {
+    return "championship";
+  }
+  return null;
+}
+export function isLeagueRound(round) {
+  const mt = effectiveMatchType(round);
+  return mt === "league" || mt === "playoff" || mt === "championship";
+}
+
 // ─── COURSE RECORDS ─────────────────────────────────────
 export function computeCourseRecords(rounds, leagueMatches, me) {
   const records = {};
