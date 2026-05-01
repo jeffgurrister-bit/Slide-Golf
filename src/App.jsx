@@ -13,7 +13,7 @@ import { PGA_2026, getPGACourse } from "./data/pga2026.js";
 import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, RelPar, genLiveCode, isRoundSealed, computeCourseRecords, computeAchievements, isLeagueRound, isRoundHiddenForDisplay, championshipFingerprints, roundHoleCount } from "./utils/helpers.jsx";
 import { generateCourse } from "./utils/generate.js";
 import { C, btnS, inputS, smallInput } from "./utils/theme.js";
-import { generateRRSchedule, LEAGUE_FORMATS, buildPlayoffMatches, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS } from "./data/league.js";
+import { generateRRSchedule, LEAGUE_FORMATS, buildPlayoffMatches, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS, PLAYOFF_SIZE_OPTIONS, effectivePlayoffSize } from "./data/league.js";
 
 // ─── COMPONENT IMPORTS ──────────────────────────────────
 import HomeTab from "./components/HomeTab.jsx";
@@ -196,13 +196,27 @@ export default function App(){
     const ref = await addDoc(collection(db,"leagues"), {
       name, code: code.toUpperCase(), creator: me, status: "lobby",
       players: [me],
-      // New configurable options. Defaults match the prior behavior so any
+      // Schedule + match options. Defaults match the prior behavior so any
       // legacy lobby continues to work unchanged.
       holeCount: opts.holeCount === 9 ? 9 : 18,
       scheduleType: opts.scheduleType === "double" ? "double" : "single",
-      courseRotation: opts.courseRotation || "free", // "free" | "scheduled"
-      coursePool: opts.coursePool || null, // null = all courses allowed
-      coursesByRound: null, // populated in lobby when rotation === "scheduled"
+      courseRotation: opts.courseRotation || "free",
+      coursePool: opts.coursePool || null,
+      coursesByRound: null,
+      // Playoff + championship options.
+      playoffSizeOverride: opts.playoffSizeOverride != null ? opts.playoffSizeOverride : null,
+      championshipCourse: opts.championshipCourse || null,
+      // Handicap options. useHandicapScoring drives adjusted-totals winner
+      // determination in saveRound. handicapSource picks where the handicap
+      // value comes from: "manual" reads league.handicaps[player], "auto"
+      // computes from the player's saved rounds (calcHandicap). handicapCap
+      // clamps |handicap| so extreme values don't skew results.
+      useHandicapScoring: !!opts.useHandicapScoring,
+      handicapSource: opts.handicapSource === "auto" ? "auto" : "manual",
+      handicapCap: opts.handicapCap != null ? Number(opts.handicapCap) : null,
+      // Per-league display config.
+      nicknames: {},
+      handicaps: {},
       createdAt: Date.now()
     });
     setSelectedLeague(ref.id);
@@ -321,9 +335,12 @@ export default function App(){
       }
     }
     await Promise.all(writes);
+    // Persist effectivePlayoffSize so we can short-circuit to "complete" if
+    // the creator chose "no playoffs" — checkLeagueProgress reads this back.
     await updateDoc(doc(db,"leagues",leagueId), {
       status: "active", totalRounds: schedule.length, currentRound: 1,
-      playoffSize: fmt.playoffSize, formatName: fmt.name
+      playoffSize: lg.playoffSizeOverride != null ? lg.playoffSizeOverride : fmt.playoffSize,
+      formatName: fmt.name
     });
   }
 
@@ -494,8 +511,32 @@ export default function App(){
           if(!match.course)updates.course=selCourse.name;
           if(p1Done&&p2Done&&p1Tot!=null&&p2Tot!=null){
             updates.status="complete";updates.resultsSeenBy=[];
-            if(p1Tot<p2Tot){updates.winner=match.player1;updates.margin=p2Tot-p1Tot;}
-            else if(p2Tot<p1Tot){updates.winner=match.player2;updates.margin=p1Tot-p2Tot;}
+            // Adjusted totals when the league has handicap scoring enabled.
+            // We persist both raw totals (already in p1Total/p2Total) and the
+            // adjusted values used for winner determination so the match
+            // detail can show both.
+            const lg=leagues.find(l=>l.id===match.leagueId);
+            const useHcp=!!lg?.useHandicapScoring;
+            const cap=lg?.handicapCap;
+            const clamp=v=>{if(v==null||cap==null)return v;const a=Math.abs(cap);return Math.max(-a,Math.min(a,v));};
+            // Resolve handicap from the configured source. Manual reads the
+            // creator-set override; auto computes from the player's full
+            // round history at score-time.
+            const resolveHcp=(player)=>{
+              if(!useHcp||!player)return null;
+              if((lg?.handicapSource||"manual")==="auto"){
+                const pr=rounds.filter(r=>r.player===player&&(r.holeCount||r.holesPlayed||18)===18);
+                return clamp(calcHandicap(pr));
+              }
+              return clamp(lg?.handicaps?.[player]);
+            };
+            const h1=resolveHcp(match.player1);
+            const h2=resolveHcp(match.player2);
+            const adj1=useHcp&&h1!=null?p1Tot-h1:p1Tot;
+            const adj2=useHcp&&h2!=null?p2Tot-h2:p2Tot;
+            if(useHcp){updates.p1Adj=adj1;updates.p2Adj=adj2;updates.handicapApplied=true;}
+            if(adj1<adj2){updates.winner=match.player1;updates.margin=adj2-adj1;}
+            else if(adj2<adj1){updates.winner=match.player2;updates.margin=adj1-adj2;}
             else{updates.winner="Tie";updates.margin=0;}
           }else{updates.status="in-progress";}
           await updateDoc(doc(db,"leagueMatches",match.id),updates);
@@ -568,8 +609,17 @@ export default function App(){
       const sorted=Object.values(stats).sort((a,b)=>b.pts-a.pts||(a.diff-b.diff));
       const fmt=LEAGUE_FORMATS[lg.players.length];
       if(!fmt)return;
-      const seeds=sorted.slice(0,fmt.playoffSize);
-      const matches=buildPlayoffMatches(leagueId,lg.totalRounds,seeds,fmt);
+      const ps=effectivePlayoffSize(lg);
+      // No playoffs: league completes immediately after the regular season.
+      if(ps===0){
+        await updateDoc(doc(db,"leagues",leagueId),{status:"complete"});
+        return;
+      }
+      const seeds=sorted.slice(0,ps);
+      const matches=buildPlayoffMatches(leagueId,lg.totalRounds,seeds,fmt,{
+        playoffSize:ps,
+        championshipCourse:lg.championshipCourse||null
+      });
       await Promise.all(matches.map(m=>addDoc(collection(db,"leagueMatches"),{...m,createdAt:Date.now()})));
       await updateDoc(doc(db,"leagues",leagueId),{status:"playoffs"});
     }

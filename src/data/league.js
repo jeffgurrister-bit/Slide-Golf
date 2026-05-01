@@ -12,6 +12,7 @@ export const S1_PLAYOFFS=[
 
 // ─── LEAGUE FORMAT OPTIONS ──────────────────────────────
 export const LEAGUE_FORMATS = {
+  3: { name: "3-Player Showdown", playoffSize: 2, desc: "Round-robin → Championship Final" },
   4: { name: "4-Player Showdown", playoffSize: 2, desc: "Full round-robin → Championship Final" },
   5: { name: "5-Player Classic", playoffSize: 4, desc: "Full round-robin → Top 4 playoffs" },
   6: { name: "6-Player League", playoffSize: 4, desc: "Full round-robin → Top 4 playoffs" },
@@ -22,24 +23,41 @@ export const LEAGUE_FORMATS = {
   11: { name: "11-Player Series", playoffSize: 8, desc: "Round-robin → Top 8 playoffs" },
   12: { name: "12-Player Tournament", playoffSize: 8, desc: "Round-robin → Top 8 playoffs" },
 };
-export const MIN_LEAGUE_PLAYERS = 4;
+export const MIN_LEAGUE_PLAYERS = 3;
 export const MAX_LEAGUE_PLAYERS = 12;
+// Allowed playoff size overrides. 0 = no playoffs, league ends after RR.
+export const PLAYOFF_SIZE_OPTIONS = [0, 2, 4, 8];
+// Returns the effective playoff size for a league. If override is null/undefined,
+// uses the format default. If override is 0, no playoffs.
+export function effectivePlayoffSize(league) {
+  const fmt = LEAGUE_FORMATS[league.players?.length];
+  if (league.playoffSizeOverride != null) return league.playoffSizeOverride;
+  return fmt?.playoffSize ?? 0;
+}
 
 // ─── PLAYOFF BRACKET BUILDER ────────────────────────────
 // Returns an array of leagueMatches doc shapes (without createdAt) for the
 // post-regular-season bracket. Caller is responsible for the actual addDoc
 // calls and timestamping.
-export function buildPlayoffMatches(leagueId, totalRounds, sortedSeeds, fmt) {
-  const ps = fmt.playoffSize;
+//
+// `playoffSize` overrides fmt.playoffSize when provided (lets the creator
+// pick a non-default bracket like "no playoffs" or "top 2"). championshipCourse
+// is written onto the F match if set; other matches stay null and rely on
+// course-of-the-week or free-pick.
+export function buildPlayoffMatches(leagueId, totalRounds, sortedSeeds, fmt, opts = {}) {
+  const ps = opts.playoffSize != null ? opts.playoffSize : fmt.playoffSize;
+  const championshipCourse = opts.championshipCourse || null;
+  if (ps === 0) return []; // No playoffs.
   const stub = { leagueId, course: null, p1Total: null, p2Total: null, p1Par: null, p2Par: null, p1Scores: null, p2Scores: null, winner: null, margin: null, status: "pending" };
   const seed = i => sortedSeeds[i]?.player || null;
+  const finalStub = { ...stub, course: championshipCourse };
   const matches = [];
   if (ps <= 2) {
-    matches.push({ ...stub, round: totalRounds + 1, matchNum: 1, roundType: "F", player1: seed(0), player2: seed(1) });
+    matches.push({ ...finalStub, round: totalRounds + 1, matchNum: 1, roundType: "F", player1: seed(0), player2: seed(1) });
   } else if (ps <= 4) {
     matches.push({ ...stub, round: totalRounds + 1, matchNum: 1, roundType: "SF", player1: seed(0), player2: seed(3) });
     matches.push({ ...stub, round: totalRounds + 1, matchNum: 2, roundType: "SF", player1: seed(1), player2: seed(2) });
-    matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "F", player1: null, player2: null });
+    matches.push({ ...finalStub, round: totalRounds + 2, matchNum: 1, roundType: "F", player1: null, player2: null });
   } else if (ps <= 7) {
     const qfPairs = ps >= 7
       ? [[seed(4), seed(3)], [seed(1), seed(6)], [seed(2), seed(5)]]
@@ -47,14 +65,14 @@ export function buildPlayoffMatches(leagueId, totalRounds, sortedSeeds, fmt) {
     qfPairs.forEach((pair, i) => matches.push({ ...stub, round: totalRounds + 1, matchNum: i + 1, roundType: "QF", player1: pair[0], player2: pair[1] }));
     matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "SF", player1: seed(0), player2: null });
     matches.push({ ...stub, round: totalRounds + 2, matchNum: 2, roundType: "SF", player1: ps >= 7 ? null : seed(1), player2: null });
-    matches.push({ ...stub, round: totalRounds + 3, matchNum: 1, roundType: "F", player1: null, player2: null });
+    matches.push({ ...finalStub, round: totalRounds + 3, matchNum: 1, roundType: "F", player1: null, player2: null });
   } else {
-    // ps === 8: full QF→SF→F bracket, no byes (used for 11- and 12-player leagues)
+    // ps === 8: full QF→SF→F bracket, no byes
     const qfPairs = [[seed(0), seed(7)], [seed(3), seed(4)], [seed(1), seed(6)], [seed(2), seed(5)]];
     qfPairs.forEach((pair, i) => matches.push({ ...stub, round: totalRounds + 1, matchNum: i + 1, roundType: "QF", player1: pair[0], player2: pair[1] }));
     matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "SF", player1: null, player2: null });
     matches.push({ ...stub, round: totalRounds + 2, matchNum: 2, roundType: "SF", player1: null, player2: null });
-    matches.push({ ...stub, round: totalRounds + 3, matchNum: 1, roundType: "F", player1: null, player2: null });
+    matches.push({ ...finalStub, round: totalRounds + 3, matchNum: 1, roundType: "F", player1: null, player2: null });
   }
   return matches;
 }
