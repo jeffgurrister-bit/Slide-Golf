@@ -4,7 +4,7 @@ import { C, btnS, inputS } from "../utils/theme.js";
 
 export default function LeagueTab({
   me, leagueView, setLeagueView, leagueRdFilter, setLeagueRdFilter,
-  leagues, leagueMatches, allCourses,
+  leagues, leagueMatches, rounds, allCourses,
   createLeague, joinLeagueByCode, startLeagueSeason, playLeagueMatch,
   selectedLeague, setSelectedLeague,
   openPlayerProfile
@@ -21,12 +21,28 @@ export default function LeagueTab({
   const curMatches = curLeague ? (leagueMatches || []).filter(m => m.leagueId === curLeague.id) : [];
   const dynStandings = curLeague ? computeStandings(curLeague.players || [], curMatches) : [];
 
-  // S1 Finals
-  const s1Final = S1_PLAYOFFS.find(g => g[4] === "F");
-  const s1FinalP1 = s1Final?.[5], s1FinalP2 = s1Final?.[7];
+  // S1 Finals — completion derived from hardcoded data OR from saved championship
+  // rounds in Firestore (matchType === "championship", Nebraska, both finalists).
+  const s1FinalRaw = S1_PLAYOFFS.find(g => g[4] === "F");
+  const s1FinalP1 = s1FinalRaw?.[5], s1FinalP2 = s1FinalRaw?.[7];
+  const champRoundFor = (name) => (rounds || [])
+    .filter(r => r.player === name && r.matchType === "championship" && r.course === "Nebraska")
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+  const p1ChampRd = s1FinalP1 && champRoundFor(s1FinalP1);
+  const p2ChampRd = s1FinalP2 && champRoundFor(s1FinalP2);
+  const s1Final = (() => {
+    if (s1FinalRaw?.[9] != null) return s1FinalRaw;
+    if (p1ChampRd && p2ChampRd) {
+      const t1 = p1ChampRd.total, t2 = p2ChampRd.total;
+      const winner = t1 < t2 ? s1FinalP1 : t2 < t1 ? s1FinalP2 : "Tie";
+      const diff = winner === "Tie" ? 0 : (winner === s1FinalP1 ? t1 - t2 : t2 - t1);
+      return [...s1FinalRaw.slice(0, 6), t1, s1FinalRaw[7], t2, winner, diff];
+    }
+    return s1FinalRaw;
+  })();
   const s1FinalComplete = s1Final?.[9] != null;
   const s1Champion = s1Final?.[9];
-  const canPlayS1Final = !s1FinalComplete && s1FinalP1 && s1FinalP2 && (me === s1FinalP1 || me === s1FinalP2);
+  const canPlayS1Final = !s1FinalComplete && s1FinalP1 && s1FinalP2 && (me === s1FinalP1 || me === s1FinalP2) && !((me === s1FinalP1 && p1ChampRd) || (me === s1FinalP2 && p2ChampRd));
   const s1Status = s1FinalComplete ? "Complete" : "Finals";
 
   // ─── (forms inlined in render below) ───────────────────
@@ -56,7 +72,8 @@ export default function LeagueTab({
             </div>
           </div>
           {canPlayS1Final && <button onClick={()=>playLeagueMatch&&playLeagueMatch("s1-final")} style={{marginTop:20,padding:"16px 40px",fontSize:18,fontWeight:900,borderRadius:12,border:"2px solid #d4b84a",background:"linear-gradient(135deg,#2d6a2d,#1e4a1e)",color:"#fff",cursor:"pointer",letterSpacing:2,textTransform:"uppercase",boxShadow:"0 0 30px rgba(212,184,74,0.3)"}}>⛳ TEE OFF</button>}
-          {!canPlayS1Final && !s1FinalComplete && <div style={{marginTop:16,fontSize:12,color:C.muted}}>Championship awaits...</div>}
+          {!canPlayS1Final && !s1FinalComplete && (me === s1FinalP1 || me === s1FinalP2) && ((me === s1FinalP1 && p1ChampRd) || (me === s1FinalP2 && p2ChampRd)) && <div style={{marginTop:16,fontSize:12,color:C.greenLt,fontWeight:600}}>✓ You played — waiting for opponent</div>}
+          {!canPlayS1Final && !s1FinalComplete && !((me === s1FinalP1 && p1ChampRd) || (me === s1FinalP2 && p2ChampRd)) && <div style={{marginTop:16,fontSize:12,color:C.muted}}>Championship awaits...</div>}
         </div>
       </div>
     );
