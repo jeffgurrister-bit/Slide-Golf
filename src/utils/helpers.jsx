@@ -48,6 +48,24 @@ export function isLeagueRound(round) {
   return mt === "league" || mt === "playoff" || mt === "championship";
 }
 
+// Whether a round's score should still be hidden in list views. Manually-hidden
+// rounds stay hidden forever; auto-hidden league rounds reveal once the match
+// is no longer pending (dynamic matches: not sealed; S1 championship: both
+// finalists have a championship-tagged round).
+export function isRoundHiddenForDisplay(round, leagueMatches, rounds, me) {
+  if (!round?.hidden) return false;
+  const auto = round.autoHidden || isLeagueRound(round);
+  if (!auto) return true;
+  if (round.sealedMatchId) return isRoundSealed(round, leagueMatches, me);
+  if (effectiveMatchType(round) === "championship") {
+    const hasBoth = [...S1_FINALISTS].every(name =>
+      (rounds || []).some(r => r.player === name && effectiveMatchType(r) === "championship")
+    );
+    return !hasBoth;
+  }
+  return false;
+}
+
 // ─── COURSE RECORDS ─────────────────────────────────────
 export function computeCourseRecords(rounds, leagueMatches, me) {
   const records = {};
