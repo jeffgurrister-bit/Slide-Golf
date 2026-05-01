@@ -1,8 +1,9 @@
 import { C } from "../utils/theme.js";
-import { isRoundSealed, isLeagueRound } from "../utils/helpers.jsx";
+import { isRoundSealed, isLeagueRound, championshipFingerprints, roundHoleCount } from "../utils/helpers.jsx";
 
 export default function StatsTab({ playerStats, rounds, leagueMatches, me, openPlayerProfile, allCourses, lbHoleFilter, setLbHoleFilter, statsMode, setStatsMode }) {
-  const modeMatch = r => statsMode==="league" ? isLeagueRound(r) : statsMode==="regular" ? !isLeagueRound(r) : true;
+  const champFps = championshipFingerprints(leagueMatches);
+  const modeMatch = r => statsMode==="league" ? isLeagueRound(r, champFps) : statsMode==="regular" ? !isLeagueRound(r, champFps) : true;
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
@@ -12,14 +13,13 @@ export default function StatsTab({ playerStats, rounds, leagueMatches, me, openP
           <button onClick={()=>setLbHoleFilter(9)} style={{padding:"4px 12px",borderRadius:6,border:lbHoleFilter===9?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:lbHoleFilter===9?C.accent:"transparent",color:lbHoleFilter===9?C.white:C.muted,cursor:"pointer",fontSize:11,fontWeight:600}}>9H</button>
         </div>
       </div>
-      {setStatsMode && <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+      <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
         {[["all","All"],["regular","Regular"],["league","League"]].map(([v,l])=>(
           <button key={v} onClick={()=>setStatsMode(v)} style={{padding:"3px 10px",borderRadius:6,border:statsMode===v?`2px solid ${C.gold}`:`1px solid ${C.border}`,background:statsMode===v?"rgba(212,184,74,0.15)":"transparent",color:statsMode===v?C.gold:C.muted,cursor:"pointer",fontSize:10,fontWeight:600}}>{l}</button>
         ))}
-      </div>}
-      {playerStats.map(p=>{const pr=rounds.filter(r=>r.player===p.name&&(r.holeCount||r.holesPlayed||18)===lbHoleFilter&&!isRoundSealed(r,leagueMatches,me)&&modeMatch(r));if(!pr.length)return null;const courseCounts={};pr.forEach(r=>{courseCounts[r.course]=(courseCounts[r.course]||0)+1;});
-        // Avg putts
-        const puttsRounds = rounds.filter(r => r.player === p.name && r.totalPutts != null && (r.holeCount||r.holesPlayed||18)===lbHoleFilter && !isRoundSealed(r, leagueMatches, me) && modeMatch(r));
+      </div>
+      {playerStats.map(p=>{const pr=rounds.filter(r=>r.player===p.name&&roundHoleCount(r)===lbHoleFilter&&!isRoundSealed(r,leagueMatches,me)&&modeMatch(r));if(!pr.length)return null;const courseCounts={};pr.forEach(r=>{courseCounts[r.course]=(courseCounts[r.course]||0)+1;});
+        const puttsRounds = rounds.filter(r => r.player === p.name && r.totalPutts != null && roundHoleCount(r)===lbHoleFilter && !isRoundSealed(r, leagueMatches, me) && modeMatch(r));
         const avgPutts = puttsRounds.length ? Math.round(puttsRounds.reduce((s, r) => s + r.totalPutts, 0) / puttsRounds.length * 10) / 10 : null;
 
         return <div key={p.name} style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>

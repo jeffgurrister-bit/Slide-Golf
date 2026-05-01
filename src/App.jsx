@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { db } from "./firebase.js";
 import {
   collection, addDoc, deleteDoc, doc, onSnapshot,
-  query, orderBy, updateDoc, where, getDocs, getDoc
+  query, orderBy, updateDoc, where, getDocs, getDoc, arrayUnion, arrayRemove
 } from "firebase/firestore";
 
 // ─── DATA IMPORTS ───────────────────────────────────────
@@ -10,10 +10,10 @@ import { COURSES } from "./data/courses.js";
 import { PGA_2026, getPGACourse } from "./data/pga2026.js";
 
 // ─── UTILITY IMPORTS ────────────────────────────────────
-import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, scoreName, RelPar, genLiveCode, calcNeed, isRoundSealed, computeCourseRecords, computeAchievements, isLeagueRound, isRoundHiddenForDisplay } from "./utils/helpers.jsx";
+import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, RelPar, genLiveCode, isRoundSealed, computeCourseRecords, computeAchievements, isLeagueRound, isRoundHiddenForDisplay, championshipFingerprints, roundHoleCount } from "./utils/helpers.jsx";
 import { generateCourse } from "./utils/generate.js";
 import { C, btnS, inputS, smallInput } from "./utils/theme.js";
-import { generateRRSchedule, LEAGUE_FORMATS } from "./data/league.js";
+import { generateRRSchedule, LEAGUE_FORMATS, buildPlayoffMatches } from "./data/league.js";
 
 // ─── COMPONENT IMPORTS ──────────────────────────────────
 import HomeTab from "./components/HomeTab.jsx";
@@ -106,7 +106,7 @@ export default function App(){
   async function addPlayerToDB(name){const n=name.trim();if(!n||players.some(p=>p.name===n))return;await addDoc(collection(db,"players"),{name:n,createdAt:Date.now()});}
   async function saveRoundToDB(rd){await addDoc(collection(db,"rounds"),{...rd,createdAt:Date.now()});}
   async function deleteRoundFromDB(id){await deleteDoc(doc(db,"rounds",id));}
-  async function saveCoursetoDB(course){return(await addDoc(collection(db,"customCourses"),{name:course.name,level:course.level,holes:course.holes,pga:course.pga||false,tournament:course.tournament||"",createdAt:Date.now()})).id;}
+  async function saveCoursetoDB(course){return(await addDoc(collection(db,"customCourses"),{name:course.name,level:course.level,holes:course.holes,tournament:course.tournament||"",createdAt:Date.now()})).id;}
   async function deleteCourseFromDB(id){await deleteDoc(doc(db,"customCourses",id));}
   function selectMe(name){setMe(name);try{localStorage.setItem("sg-me",name);}catch(e){}}
 
@@ -117,7 +117,7 @@ export default function App(){
     const playersArr=[me,...roundPlayers.filter(p=>p!==me)];
     const scoresObj={};const hioObj={};
     playersArr.forEach(p=>{scoresObj[p]=allScores[p]||Array(18).fill(null);hioObj[p]=0;});
-    const ref=await addDoc(collection(db,"liveRounds"),{code,host:me,courseName:selCourse.name,courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,pga:selCourse.pga||false,tournament:selCourse.tournament||""},players:playersArr,status:"playing",scores:scoresObj,holeInOnes:hioObj,hideScores,useHdcp,hdcps,activeTourney:activeTourney||null,activeLeagueMatch:activeLeagueMatch||null,scoreMode:liveScoreMode,createdAt:Date.now()});
+    const ref=await addDoc(collection(db,"liveRounds"),{code,host:me,courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,tournament:selCourse.tournament||""},players:playersArr,status:"playing",scores:scoresObj,holeInOnes:hioObj,hideScores,useHdcp,hdcps,activeTourney:activeTourney||null,activeLeagueMatch:activeLeagueMatch||null,scoreMode:liveScoreMode,createdAt:Date.now()});
     setLiveId(ref.id);
   }
   async function joinLive(){
@@ -130,7 +130,13 @@ export default function App(){
       const pls=[...data.players];if(!pls.includes(me))pls.push(me);
       const scores={...data.scores};if(!scores[me])scores[me]=Array(18).fill(null);
       const hio={...data.holeInOnes};if(hio[me]===undefined)hio[me]=0;
-      await updateDoc(doc(db,"liveRounds",d.id),{players:pls,scores,holeInOnes:hio});
+      // Dot-notation writes only — never overwrite the whole scores/holeInOnes
+      // map (race-condition risk if another joiner is mid-write).
+      const updates={};
+      if(!data.players.includes(me))updates.players=arrayUnion(me);
+      if(!data.scores?.[me])updates[`scores.${me}`]=Array(18).fill(null);
+      if(data.holeInOnes?.[me]===undefined)updates[`holeInOnes.${me}`]=0;
+      if(Object.keys(updates).length)await updateDoc(doc(db,"liveRounds",d.id),updates);
       setLiveId(d.id);setSelCourse(data.courseData);setActiveTourney(data.activeTourney||null);
       if(data.activeLeagueMatch)setActiveLeagueMatch(data.activeLeagueMatch);
       setLiveScoreMode(data.scoreMode||"self");setRoundPlayers(pls);setAllScores(scores);
@@ -140,7 +146,21 @@ export default function App(){
     }catch(e){alert("Error joining: "+e.message);}
   }
   async function leaveLive(){
-    if(liveId&&liveData&&liveData.host===me){try{await updateDoc(doc(db,"liveRounds",liveId),{status:"finished"});}catch(e){}}
+    if(liveId&&liveData){
+      try{
+        if(liveData.host===me){
+          // Host: mark finished so other clients can clean up listeners.
+          await updateDoc(doc(db,"liveRounds",liveId),{status:"finished"});
+        }else{
+          // Joiner: remove self from players list. If we're the last one,
+          // mark the room finished so it doesn't linger.
+          const remaining=(liveData.players||[]).filter(p=>p!==me);
+          const updates={players:arrayRemove(me)};
+          if(remaining.length===0)updates.status="finished";
+          await updateDoc(doc(db,"liveRounds",liveId),updates);
+        }
+      }catch(e){}
+    }
     setLiveId(null);setLiveData(null);
   }
   async function syncMyScores(){
@@ -256,7 +276,7 @@ export default function App(){
   function setCcHolePar(idx,par){setCcHoles(prev=>{const n=[...prev];n[idx]={...n[idx],par};return n;});}
   function setCcHoleRange(idx,field,val){const v=parseInt(val)||0;setCcHoles(prev=>{const n=[...prev];n[idx]={...n[idx],[field]:Math.max(1,Math.min(30,v))};return n;});}
   async function saveCreatedCourse(){if(!ccName.trim())return;const holes=ccHoles.map(h=>({num:h.num,par:h.par,range:[h.rangeMin,Math.max(h.rangeMin,h.rangeMax)]}));await saveCoursetoDB({name:ccName.trim(),level:ccLevel,holes,tournament:ccTournament.trim()});setCreating(false);resetCreator();}
-  async function handleGenerate(diff){const en=[...allCourses.map(c=>c.name),...PGA_2026.map(c=>c.name)];const course=generateCourse(diff,en);await saveCoursetoDB(course);setSelCourse({...course,generated:true});setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");}
+  async function handleGenerate(diff){const en=[...allCourses.map(c=>c.name),...PGA_2026.map(c=>c.name)];const course=generateCourse(diff,en);const id=await saveCoursetoDB(course);setSelCourse({...course,id,generated:true});setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");}
 
   // ─── PLAY FUNCTIONS ────────────────────────────────────
   function startRound(course){setSelCourse(course);setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setActiveTourney(null);setActiveLeagueMatch(null);setLiveId(null);setLiveData(null);setSavedHoleStates({});setHoleCount(18);setNineType("front");setTab("play");}
@@ -266,7 +286,7 @@ export default function App(){
     const startHole=holeCount===9&&nineType==="back"?9:0;
     setCurHole(startHole);setSavedHoleStates({});
     if(isLive&&liveScoreMode==="self"){const myIdx=roundPlayers.indexOf(me);setCurPlayerIdx(myIdx>=0?myIdx:0);}else{setCurPlayerIdx(0);}
-    initHoleFor(0);
+    initHoleFor();
   }
   function initHoleFor(){const hs={};roundPlayers.forEach(p=>{hs[p]={shots:[],total:0,onGreen:false,putts:0,done:false,score:null,holeOut:false};});setHoleState(hs);}
 
@@ -350,9 +370,11 @@ export default function App(){
           courseHoles: playedHoles
         });
         if(activeTourney){
-          const tJoin=tEntries.find(e=>e.tournamentId===activeTourney.key&&e.player===p&&e.round===0);const tHd=tJoin?.hdcp||hd;
+          // Per-round PGA hdcp/adjTotal are NOT persisted: tBoard recomputes
+          // adjusted totals from the player's current join-doc hdcp so a
+          // mid-tournament hdcp update applies to all rounds, past and future.
           const existing=tEntries.find(e=>e.tournamentId===activeTourney.key&&e.player===p&&e.round===activeTourney.round);
-          if(!existing){await addDoc(collection(db,"pgaTourneys"),{tournamentId:activeTourney.key,player:p,round:activeTourney.round,scores:playedScores,total,par:totalPar,hdcp:tHd,adjTotal:tHd?total-tHd:null,holeInOnes:hio,date:new Date().toISOString().split("T")[0],createdAt:Date.now()});}
+          if(!existing){await addDoc(collection(db,"pgaTourneys"),{tournamentId:activeTourney.key,player:p,round:activeTourney.round,scores:playedScores,total,par:totalPar,holeInOnes:hio,date:new Date().toISOString().split("T")[0],createdAt:Date.now()});}
         }
       }
     }
@@ -361,50 +383,59 @@ export default function App(){
     if(activeLeagueMatch && activeLeagueMatch.matchId !== "s1-final"){
       const match = leagueMatches.find(m=>m.id===activeLeagueMatch.matchId);
       if(match){
-        const sc=allScores[me]||Array(18).fill(null);
-        const total=sc.reduce((s,v)=>s+(v||0),0);
-        const isP1=match.player1===me;
+        // In keeper-host mode the host scores both players, so we write
+        // whichever of player1/player2 are in this round. In any other
+        // mode we only have our own totals.
+        const playersToWrite = isKeeperHost
+          ? [match.player1, match.player2].filter(p => p && roundPlayers.includes(p))
+          : [me];
         const updates={};
-        if(isP1){
-          updates.p1Total=total;updates.p1Par=totalPar;updates.p1Scores=sc;
+        let p1Tot=match.p1Total, p2Tot=match.p2Total;
+        let p1Done=match.p1Total!=null, p2Done=match.p2Total!=null;
+        playersToWrite.forEach(p=>{
+          const psc=allScores[p]||Array(18).fill(null);
+          const ptot=psc.reduce((s,v)=>s+(v||0),0);
+          if(match.player1===p){updates.p1Total=ptot;updates.p1Par=totalPar;updates.p1Scores=psc;p1Tot=ptot;p1Done=true;}
+          else if(match.player2===p){updates.p2Total=ptot;updates.p2Par=totalPar;updates.p2Scores=psc;p2Tot=ptot;p2Done=true;}
+        });
+        if(Object.keys(updates).length){
           if(!match.course)updates.course=selCourse.name;
-        }else{
-          updates.p2Total=total;updates.p2Par=totalPar;updates.p2Scores=sc;
-          if(!match.course)updates.course=selCourse.name;
+          if(p1Done&&p2Done&&p1Tot!=null&&p2Tot!=null){
+            updates.status="complete";updates.resultsSeenBy=[];
+            if(p1Tot<p2Tot){updates.winner=match.player1;updates.margin=p2Tot-p1Tot;}
+            else if(p2Tot<p1Tot){updates.winner=match.player2;updates.margin=p1Tot-p2Tot;}
+            else{updates.winner="Tie";updates.margin=0;}
+          }else{updates.status="in-progress";}
+          await updateDoc(doc(db,"leagueMatches",match.id),updates);
+          if(updates.status==="complete"){await checkLeagueProgress(match.leagueId);}
         }
-        const p1Done=isP1?true:(match.p1Total!=null);
-        const p2Done=isP1?(match.p2Total!=null):true;
-        const p1Tot=isP1?total:match.p1Total;
-        const p2Tot=isP1?match.p2Total:total;
-        if(p1Done&&p2Done&&p1Tot!=null&&p2Tot!=null){
-          updates.status="complete";updates.resultsSeenBy=[];
-          if(p1Tot<p2Tot){updates.winner=match.player1;updates.margin=p2Tot-p1Tot;}
-          else if(p2Tot<p1Tot){updates.winner=match.player2;updates.margin=p1Tot-p2Tot;}
-          else{updates.winner="Tie";updates.margin=0;}
-        }else{updates.status="in-progress";}
-        await updateDoc(doc(db,"leagueMatches",match.id),updates);
-        if(updates.status==="complete"){await checkLeagueProgress(match.leagueId);}
       }
     }
 
     if(isLive){await syncMyScores();}
 
     // ─── COURSE RECORD CHECK (18-hole only) ───
+    // Pick the lowest qualifying total in this round; that's the actual new
+    // record holder. Previously this celebrated the first player iterated,
+    // even if a later player in the same round shot lower.
     let recordBroken = false;
     if (holeCount === 18) {
       const courseName = selCourse.name;
+      const old = preRecords[courseName];
+      let best = null;
       for (const p of roundPlayers) {
         const sc = allScores[p] || Array(18).fill(null);
         const total = sc.reduce((s, v) => s + (v || 0), 0);
         const holesPlayed = sc.filter(v => v !== null).length;
         if (holesPlayed !== 18) continue;
-        const old = preRecords[courseName];
-        if (!old || total < old.total) {
-          const dest = activeTourney ? "home" : activeLeagueMatch ? "league" : "leaderboard";
-          setNewRecordInfo({ player: p, course: courseName, newScore: total, newPar: totalPar, oldRecord: old || null, navigateTo: dest });
-          recordBroken = true;
-          break;
+        if ((!old || total < old.total) && (!best || total < best.total)) {
+          best = { player: p, total };
         }
+      }
+      if (best) {
+        const dest = activeTourney ? "home" : activeLeagueMatch ? "league" : "leaderboard";
+        setNewRecordInfo({ player: best.player, course: courseName, newScore: best.total, newPar: totalPar, oldRecord: old || null, navigateTo: dest });
+        recordBroken = true;
       }
     }
 
@@ -445,28 +476,20 @@ export default function App(){
       const sorted=Object.values(stats).sort((a,b)=>b.pts-a.pts||(a.diff-b.diff));
       const fmt=LEAGUE_FORMATS[lg.players.length];
       if(!fmt)return;
-      const ps=fmt.playoffSize;
-      const seeds=sorted.slice(0,ps);
-      if(ps<=2){
-        await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:1,roundType:"F",player1:seeds[0]?.player,player2:seeds[1]?.player,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-      }else if(ps<=4){
-        await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:1,roundType:"SF",player1:seeds[0]?.player,player2:seeds[3]?.player,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-        await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:2,roundType:"SF",player1:seeds[1]?.player,player2:seeds[2]?.player,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-        await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+2,matchNum:1,roundType:"F",player1:null,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-      }else{
-        const qfMatches=[];
-        if(ps>=7){qfMatches.push([seeds[4]?.player,seeds[3]?.player]);qfMatches.push([seeds[1]?.player,seeds[6]?.player]);qfMatches.push([seeds[2]?.player,seeds[5]?.player]);}
-        else{qfMatches.push([seeds[2]?.player,seeds[5]?.player]);qfMatches.push([seeds[3]?.player,seeds[4]?.player]);}
-        for(let i=0;i<qfMatches.length;i++){await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+1,matchNum:i+1,roundType:"QF",player1:qfMatches[i][0],player2:qfMatches[i][1],course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});}
-        await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+2,matchNum:1,roundType:"SF",player1:seeds[0]?.player,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-        await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+2,matchNum:2,roundType:"SF",player1:ps>=7?null:seeds[1]?.player,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-        await addDoc(collection(db,"leagueMatches"),{leagueId,round:lg.totalRounds+3,matchNum:1,roundType:"F",player1:null,player2:null,course:null,p1Total:null,p2Total:null,p1Par:null,p2Par:null,p1Scores:null,p2Scores:null,winner:null,margin:null,status:"pending",createdAt:Date.now()});
-      }
+      const seeds=sorted.slice(0,fmt.playoffSize);
+      const matches=buildPlayoffMatches(leagueId,lg.totalRounds,seeds,fmt);
+      await Promise.all(matches.map(m=>addDoc(collection(db,"leagueMatches"),{...m,createdAt:Date.now()})));
       await updateDoc(doc(db,"leagues",leagueId),{status:"playoffs"});
     }
   }
 
-  function setQuickScore(player,hole,val){setAllScores(s=>{const ns={...s};ns[player]=[...(ns[player]||Array(18).fill(null))];ns[player][hole]=val===""?null:Math.max(1,Math.min(15,parseInt(val)||null));return ns;});}
+  function parseScoreInput(val){
+    if(val==="" || val==null) return null;
+    const n=parseInt(val,10);
+    if(Number.isNaN(n)) return null;
+    return Math.max(1, Math.min(15, n));
+  }
+  function setQuickScore(player,hole,val){setAllScores(s=>{const ns={...s};ns[player]=[...(ns[player]||Array(18).fill(null))];ns[player][hole]=parseScoreInput(val);return ns;});}
   function getRunningScore(player){
     const sc=allScores[player]||Array(18).fill(null);const thru=curHole;
     const completed=sc.slice(0,thru).reduce((s,v)=>s+(v||0),0);
@@ -586,9 +609,19 @@ export default function App(){
 
   // ─── COMPUTED VALUES ───────────────────────────────────
   const playerNames=players.map(p=>p.name);
-  const modeMatch=r=>statsMode==="league"?isLeagueRound(r):statsMode==="regular"?!isLeagueRound(r):true;
-  const playerStats=playerNames.map(name=>{const pr=rounds.filter(r=>r.player===name&&(r.holeCount||r.holesPlayed||18)===18&&modeMatch(r));const unsealed=pr.filter(r=>!isRoundSealed(r,leagueMatches,me));const hcp=calcHandicap(unsealed);const best=unsealed.length?Math.min(...unsealed.map(r=>r.total)):null;const avg=unsealed.length?Math.round(unsealed.reduce((s,r)=>s+r.total,0)/unsealed.length*10)/10:null;const hio=unsealed.reduce((s,r)=>s+(r.holeInOnes||countHIO(r.scores)||0),0);return{name,rounds:unsealed.length,handicap:hcp,best,avg,holeInOnes:hio};}).sort((a,b)=>(a.handicap??999)-(b.handicap??999));
-  const playerStats9=playerNames.map(name=>{const pr=rounds.filter(r=>r.player===name&&(r.holeCount||r.holesPlayed||18)===9&&modeMatch(r));const unsealed=pr.filter(r=>!isRoundSealed(r,leagueMatches,me));const hcp=calcHandicap(unsealed);const best=unsealed.length?Math.min(...unsealed.map(r=>r.total)):null;const avg=unsealed.length?Math.round(unsealed.reduce((s,r)=>s+r.total,0)/unsealed.length*10)/10:null;const hio=unsealed.reduce((s,r)=>s+(r.holeInOnes||countHIO(r.scores)||0),0);return{name,rounds:unsealed.length,handicap:hcp,best,avg,holeInOnes:hio};}).sort((a,b)=>(a.handicap??999)-(b.handicap??999));
+  const champFps=championshipFingerprints(leagueMatches);
+  const modeMatch=r=>statsMode==="league"?isLeagueRound(r,champFps):statsMode==="regular"?!isLeagueRound(r,champFps):true;
+  const computeStatsFor=(holeCount)=>playerNames.map(name=>{
+    const pr=rounds.filter(r=>r.player===name&&roundHoleCount(r)===holeCount&&modeMatch(r));
+    const unsealed=pr.filter(r=>!isRoundSealed(r,leagueMatches,me));
+    const hcp=calcHandicap(unsealed);
+    const best=unsealed.length?Math.min(...unsealed.map(r=>r.total)):null;
+    const avg=unsealed.length?Math.round(unsealed.reduce((s,r)=>s+r.total,0)/unsealed.length*10)/10:null;
+    const hio=unsealed.reduce((s,r)=>s+(r.holeInOnes||countHIO(r.scores)||0),0);
+    return{name,rounds:unsealed.length,handicap:hcp,best,avg,holeInOnes:hio};
+  }).sort((a,b)=>(a.handicap??999)-(b.handicap??999));
+  const playerStats=computeStatsFor(18);
+  const playerStats9=computeStatsFor(9);
   const courseRecords = computeCourseRecords(rounds, leagueMatches, me);
   const pgaThisWeek=getPGACourse();
   const tId=pgaThisWeek?.start;const curTE=tId?tEntries.filter(e=>e.tournamentId===tId):[];
@@ -642,9 +675,9 @@ export default function App(){
       <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`}}>{[["home","Home"],["courses","Courses"],["play","Play"],["league","League"],["leaderboard","Board"],["stats","Stats"]].map(([k,l])=>(<button key={k} onClick={()=>{setTab(k);if(k==="courses")setCreating(false);if(k!=="home")setShowTourney(false);}} style={{flex:1,padding:"11px 4px",background:tab===k?C.accent:"transparent",color:tab===k?C.white:C.muted,border:"none",cursor:"pointer",fontSize:11,fontWeight:tab===k?700:400,borderBottom:tab===k?`2px solid ${C.greenLt}`:"2px solid transparent"}}>{l}</button>))}</div>
 
       <div style={{maxWidth:600,margin:"0 auto",padding:16}}>
-        {tab==="home"&&<HomeTab me={me} players={players} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults} openRoundDetail={openRoundDetail}/>}
+        {tab==="home"&&<HomeTab me={me} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults} openRoundDetail={openRoundDetail}/>}
         {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile}/>}
-        {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords}/>}
+        {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords} rounds={rounds} leagueMatches={leagueMatches} me={me}/>}
         {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell} holeCount={holeCount} setHoleCount={setHoleCount} nineType={nineType} setNineType={setNineType} activeLeagueMatch={activeLeagueMatch}/></>}
         {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
         {tab==="stats"&&<StatsTab playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
@@ -663,7 +696,7 @@ export default function App(){
               </div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                 {!editingRound && detailRound.player === me && <button onClick={()=>{setEditingRound(true);setEditScores([...(detailRound.scores||Array(18).fill(null))]);}} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>✏️ Edit</button>}
-                {!editingRound && (detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !isRoundHiddenForDisplay(detailRound,leagueMatches,rounds,me))) && <button onClick={()=>setShareOverlay(true)} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>📤 Share</button>}
+                {!editingRound && (detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !isRoundHiddenForDisplay(detailRound,leagueMatches,rounds,me,champFps))) && <button onClick={()=>setShareOverlay(true)} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>📤 Share</button>}
                 <button onClick={closeRoundDetail} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:20,lineHeight:1}}>✕</button>
               </div>
             </div>
@@ -672,7 +705,7 @@ export default function App(){
             {(()=>{
               const isMyRound = detailRound.player === me;
               const sealed = isRoundSealed(detailRound, leagueMatches, me);
-              const hiddenFromMe = !isMyRound && (sealed || isRoundHiddenForDisplay(detailRound, leagueMatches, rounds, me));
+              const hiddenFromMe = !isMyRound && (sealed || isRoundHiddenForDisplay(detailRound, leagueMatches, rounds, me, champFps));
               if (hiddenFromMe) return <div style={{padding:"40px 20px",textAlign:"center"}}>
                 <div style={{fontSize:40,marginBottom:12}}>{sealed?"🔒":"🙈"}</div>
                 <div style={{fontWeight:700,fontSize:16,marginBottom:6}}>{sealed?"Scores Sealed":"Scores Hidden"}</div>
@@ -682,7 +715,7 @@ export default function App(){
             })()}
 
             {/* Scorecard — only show if not hidden from viewer */}
-            {(detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !isRoundHiddenForDisplay(detailRound,leagueMatches,rounds,me))) && <>
+            {(detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !isRoundHiddenForDisplay(detailRound,leagueMatches,rounds,me,champFps))) && <>
             <div style={{padding:"12px 10px",overflowX:"auto"}}>
               {(()=>{
                 const hc = detailRound.holeCount || detailRound.holesPlayed || 18;
@@ -719,7 +752,7 @@ export default function App(){
                       {(editingRound ? editScores : detailRound.scores || []).slice(start,start+9).map((v,i)=>{
                         const idx = start+i;
                         if (editingRound) {
-                          return <td key={i} style={{padding:2}}><input value={editScores[idx]??""} onChange={e=>{const ns=[...editScores];ns[idx]=e.target.value===""?null:Math.max(1,Math.min(15,parseInt(e.target.value)||null));setEditScores(ns);}} style={{...smallInput,width:28,fontSize:11}}/></td>;
+                          return <td key={i} style={{padding:2}}><input value={editScores[idx]??""} onChange={e=>{const ns=[...editScores];ns[idx]=parseScoreInput(e.target.value);setEditScores(ns);}} style={{...smallInput,width:28,fontSize:11}}/></td>;
                         }
                         const par = holes?.[idx]?.par;
                         return par != null ? <ScoreCell key={i} score={v} par={par} size={22} fontSize={11}/> :
