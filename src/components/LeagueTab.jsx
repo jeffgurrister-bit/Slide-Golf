@@ -1,19 +1,28 @@
 import { useState } from "react";
-import { S1_STANDINGS, S1_RESULTS, S1_PLAYOFFS, LEAGUE_FORMATS, computeStandings } from "../data/league.js";
+import { S1_STANDINGS, S1_RESULTS, S1_PLAYOFFS, LEAGUE_FORMATS, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS, computeStandings, generateRRSchedule } from "../data/league.js";
 import { C, btnS, inputS } from "../utils/theme.js";
 import { effectiveMatchType, championshipFingerprints } from "../utils/helpers.jsx";
 
 export default function LeagueTab({
   me, leagueView, setLeagueView, leagueRdFilter, setLeagueRdFilter,
   leagues, leagueMatches, rounds, allCourses,
-  createLeague, joinLeagueByCode, startLeagueSeason, playLeagueMatch,
+  createLeague, updateLeagueConfig, joinLeagueByCode, startLeagueSeason, playLeagueMatch,
   selectedLeague, setSelectedLeague,
-  openPlayerProfile
+  openPlayerProfile,
+  renameLeague, swapWeekCourse, setMatchCourse, resetMatch, forfeitMatch, setLeagueHandicap
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoinCode, setShowJoinCode] = useState(false);
   const [newName, setNewName] = useState("");
+  // Configurable league options collected at create time.
+  const [newHoleCount, setNewHoleCount] = useState(18);
+  const [newScheduleType, setNewScheduleType] = useState("single");
+  const [newCourseRotation, setNewCourseRotation] = useState("free");
   const [joinCode, setJoinCode] = useState("");
+  const [showManage, setShowManage] = useState(false);
+  const [manageNameDraft, setManageNameDraft] = useState("");
+  const [forfeitTarget, setForfeitTarget] = useState(null); // matchId
+  const [hcpDrafts, setHcpDrafts] = useState({}); // { player: stringValue }
   const champFps = championshipFingerprints(leagueMatches);
 
   const myLeagues = (leagues || []).filter(lg => lg.players?.includes(me));
@@ -122,15 +131,64 @@ export default function LeagueTab({
   };
 
   // ─── DYNAMIC LEAGUE: LOBBY ────────────────────────────
-  const Lobby = () => (
-    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+  const Lobby = () => {
+    const playerCount = curLeague.players?.length || 0;
+    const fmt = LEAGUE_FORMATS[playerCount];
+    const isCreator = curLeague.creator === me;
+    const scheduleType = curLeague.scheduleType || "single";
+    const courseRotation = curLeague.courseRotation || "free";
+    const holeCount = curLeague.holeCount === 9 ? 9 : 18;
+    // Preview the schedule once we have enough players. The schedule depends
+    // on player order, so it's only meaningful when we know the final lineup.
+    const schedulePreview = fmt ? generateRRSchedule(curLeague.players, scheduleType) : null;
+    const totalWeeks = schedulePreview?.length || 0;
+    const coursesByRound = curLeague.coursesByRound || [];
+    const setRoundCourse = async (idx, courseName) => {
+      const next = [...coursesByRound];
+      next[idx] = courseName || null;
+      await updateLeagueConfig(curLeague.id, { coursesByRound: next });
+    };
+    const allCoursesAssigned = courseRotation !== "scheduled" || (totalWeeks > 0 && schedulePreview.every((_, i) => coursesByRound[i]));
+
+    return (<div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{margin:0,fontSize:18}}>⚡ {curLeague.name}</h2><span style={{background:"rgba(138,180,248,0.2)",color:C.blue,padding:"3px 10px",borderRadius:12,fontSize:11,fontWeight:600}}>Lobby</span></div>
+
       <div style={{background:"linear-gradient(135deg,#1a2a1a,#2a3a2a)",borderRadius:12,padding:20,border:`2px solid ${C.greenLt}`,textAlign:"center"}}><div style={{fontSize:11,color:C.greenLt,textTransform:"uppercase",letterSpacing:3}}>Invite Code</div><div style={{fontSize:40,fontWeight:900,letterSpacing:8,color:C.white,marginTop:8}}>{curLeague.code}</div><div style={{fontSize:12,color:C.muted,marginTop:8}}>Share this code with friends</div></div>
-      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:10}}>Players ({curLeague.players?.length||0})</div>{(curLeague.players||[]).map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card2,borderRadius:8,padding:"8px 12px",marginBottom:4}}><span style={{fontWeight:600,color:p===me?C.greenLt:C.text}}>{p}{p===me?" (you)":""}</span>{p===curLeague.creator&&<span style={{fontSize:10,color:C.gold}}>👑</span>}</div>))}</div>
-      {curLeague.creator===me&&(curLeague.players?.length||0)>=4&&LEAGUE_FORMATS[curLeague.players.length]&&<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:8}}>Ready to Start?</div><div style={{background:C.card2,borderRadius:8,padding:10,marginBottom:10}}><div style={{fontWeight:600,fontSize:13}}>{LEAGUE_FORMATS[curLeague.players.length].name}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{LEAGUE_FORMATS[curLeague.players.length].desc}</div></div><button onClick={()=>startLeagueSeason(curLeague.id)} style={{...btnS(true),width:"100%",padding:14,fontSize:15}}>🏆 Start Season</button></div>}
-      {curLeague.creator!==me&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:12}}>Waiting for {curLeague.creator} to start...</div>}
-    </div>
-  );
+
+      {/* Configuration summary */}
+      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+        <div style={{fontWeight:700,marginBottom:8,fontSize:13}}>League Settings</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:11}}>
+          <div><span style={{color:C.muted}}>Match length: </span><span style={{fontWeight:600}}>{holeCount} holes</span></div>
+          <div><span style={{color:C.muted}}>Schedule: </span><span style={{fontWeight:600}}>{scheduleType==="double"?"Double round-robin":"Single round-robin"}</span></div>
+          <div><span style={{color:C.muted}}>Courses: </span><span style={{fontWeight:600}}>{courseRotation==="scheduled"?"Course-of-the-week":"Free choice"}</span></div>
+          {fmt && <div><span style={{color:C.muted}}>Weeks: </span><span style={{fontWeight:600}}>{totalWeeks}</span></div>}
+        </div>
+      </div>
+
+      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:10}}>Players ({playerCount}{fmt?` · ${fmt.name}`:""})</div>{(curLeague.players||[]).map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card2,borderRadius:8,padding:"8px 12px",marginBottom:4}}><span style={{fontWeight:600,color:p===me?C.greenLt:C.text}}>{p}{p===me?" (you)":""}</span>{p===curLeague.creator&&<span style={{fontSize:10,color:C.gold}}>👑</span>}</div>))}{!fmt&&playerCount>0&&<div style={{fontSize:10,color:C.muted,marginTop:6,textAlign:"center"}}>Need {MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players to start</div>}</div>
+
+      {/* Course-of-the-week picker (creator only, when scheduled) */}
+      {isCreator && fmt && courseRotation === "scheduled" && schedulePreview && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+        <div style={{fontWeight:700,marginBottom:8,fontSize:13}}>Pick a Course for Each Week</div>
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {schedulePreview.map((wk, i) => (
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.muted,minWidth:60}}>Week {i + 1}</div>
+              <select value={coursesByRound[i] || ""} onChange={e => setRoundCourse(i, e.target.value)} style={{flex:1,padding:"6px 10px",borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:12}}>
+                <option value="">— Pick a course —</option>
+                {(allCourses || []).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+              </select>
+              <span style={{fontSize:9,color:C.muted,minWidth:50,textAlign:"right"}}>{wk.length} match{wk.length !== 1 ? "es" : ""}</span>
+            </div>
+          ))}
+        </div>
+      </div>}
+
+      {isCreator && fmt && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:8}}>Ready to Start?</div><div style={{background:C.card2,borderRadius:8,padding:10,marginBottom:10}}><div style={{fontWeight:600,fontSize:13}}>{fmt.name}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{fmt.desc}</div><div style={{fontSize:10,color:C.muted,marginTop:4}}>{totalWeeks} week{totalWeeks !== 1 ? "s" : ""} · {schedulePreview?.reduce((s, w) => s + w.length, 0) || 0} regular-season matches</div></div><button onClick={()=>startLeagueSeason(curLeague.id)} disabled={!allCoursesAssigned} style={{...btnS(allCoursesAssigned),width:"100%",padding:14,fontSize:15,opacity:allCoursesAssigned?1:0.5,cursor:allCoursesAssigned?"pointer":"not-allowed"}}>🏆 Start Season</button>{!allCoursesAssigned && <div style={{fontSize:10,color:C.gold,marginTop:6,textAlign:"center"}}>Pick a course for every week first</div>}</div>}
+      {!isCreator&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:12}}>Waiting for {curLeague.creator} to start...</div>}
+    </div>);
+  };
 
   // ─── DYNAMIC LEAGUE: ACTIVE ───────────────────────────
   const Active = () => {
@@ -139,10 +197,129 @@ export default function LeagueTab({
     const poMatches = curMatches.filter(m=>m.roundType!=="regular");
     const done = regMatches.filter(m=>m.status==="complete").length;
     const myPending = [...regMatches,...poMatches].filter(m=>m.status!=="complete"&&(m.player1===me||m.player2===me));
+    const isCreator = curLeague.creator === me;
+    const handicaps = curLeague.handicaps || {};
+    const coursesByRound = curLeague.coursesByRound || [];
 
     return (<div style={{display:"flex",flexDirection:"column",gap:14}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{margin:0,fontSize:18}}>⚡ {curLeague.name}</h2><span style={{background:curLeague.status==="playoffs"?"rgba(212,184,74,0.2)":"rgba(74,170,74,0.2)",color:curLeague.status==="playoffs"?C.gold:C.greenLt,padding:"3px 10px",borderRadius:12,fontSize:11,fontWeight:600}}>{curLeague.status==="playoffs"?"Playoffs":curLeague.status==="complete"?"Complete":`${done}/${regMatches.length} played`}</span></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+        <h2 style={{margin:0,fontSize:18}}>⚡ {curLeague.name}</h2>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <span style={{background:curLeague.status==="playoffs"?"rgba(212,184,74,0.2)":"rgba(74,170,74,0.2)",color:curLeague.status==="playoffs"?C.gold:C.greenLt,padding:"3px 10px",borderRadius:12,fontSize:11,fontWeight:600}}>{curLeague.status==="playoffs"?"Playoffs":curLeague.status==="complete"?"Complete":`${done}/${regMatches.length} played`}</span>
+          {isCreator && <button onClick={()=>{setShowManage(s=>!s);setManageNameDraft(curLeague.name);}} style={{...btnS(showManage),padding:"5px 10px",fontSize:11}}>{showManage?"Done":"⚙️ Manage"}</button>}
+        </div>
+      </div>
       <div style={{display:"flex",gap:4}}>{[["standings","Standings"],["schedule","Schedule"],["bracket","Bracket"]].map(([k,l])=>(<button key={k} onClick={()=>setLeagueView(k)} style={{flex:1,padding:"8px 4px",borderRadius:8,border:leagueView===k?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:leagueView===k?C.accent:C.card,color:leagueView===k?C.white:C.muted,cursor:"pointer",fontSize:12,fontWeight:600}}>{l}</button>))}</div>
+
+      {showManage && isCreator && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.gold}`,display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{fontWeight:700,fontSize:14,color:C.gold}}>⚙️ League Management</div>
+
+        {/* Rename */}
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>League Name</div>
+          <div style={{display:"flex",gap:6}}>
+            <input value={manageNameDraft} onChange={e=>setManageNameDraft(e.target.value)} style={{...inputS,flex:1}}/>
+            <button onClick={async()=>{await renameLeague(curLeague.id, manageNameDraft);}} disabled={!manageNameDraft.trim()||manageNameDraft===curLeague.name} style={{...btnS(manageNameDraft.trim()&&manageNameDraft!==curLeague.name),padding:"6px 12px",fontSize:11,opacity:(manageNameDraft.trim()&&manageNameDraft!==curLeague.name)?1:0.5}}>Save</button>
+          </div>
+        </div>
+
+        {/* Course-of-the-week edits (only if league uses scheduled rotation) */}
+        {curLeague.courseRotation === "scheduled" && <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Weekly Courses</div>
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {Array.from({length: totalRds}, (_, i) => {
+              const week = i + 1;
+              const playedInWeek = regMatches.filter(m => m.round === week && m.status === "complete").length;
+              const totalInWeek = regMatches.filter(m => m.round === week).length;
+              const partiallyPlayed = playedInWeek > 0;
+              return (
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{fontSize:11,fontWeight:600,color:C.muted,minWidth:60}}>Week {week}</div>
+                  <select value={coursesByRound[i] || ""} onChange={e => swapWeekCourse(curLeague.id, i, e.target.value)} style={{flex:1,padding:"6px 10px",borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:12}}>
+                    <option value="">— No course —</option>
+                    {(allCourses || []).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+                  </select>
+                  <span style={{fontSize:9,color:partiallyPlayed?C.gold:C.muted,minWidth:60,textAlign:"right"}}>{playedInWeek}/{totalInWeek} played{partiallyPlayed?" *":""}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{fontSize:9,color:C.muted,marginTop:6}}>* Already-played matches keep their original course — only pending matches in the week update.</div>
+        </div>}
+
+        {/* Per-match course override */}
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Override an Individual Match</div>
+          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:240,overflowY:"auto"}}>
+            {curMatches.filter(m => m.status !== "complete" && m.player1 && m.player2).sort((a,b) => a.round - b.round || a.matchNum - b.matchNum).map(m => (
+              <div key={m.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.player1} vs {m.player2}</div>
+                  <div style={{fontSize:9,color:C.muted}}>Wk {m.round} · {m.roundType==="regular"?"Reg":m.roundType}</div>
+                </div>
+                <select value={m.course || ""} onChange={e => setMatchCourse(m.id, e.target.value)} style={{padding:"4px 6px",borderRadius:4,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:11,maxWidth:140}}>
+                  <option value="">— None —</option>
+                  {(allCourses || []).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+                </select>
+              </div>
+            ))}
+            {curMatches.filter(m => m.status !== "complete").length === 0 && <div style={{fontSize:10,color:C.muted,fontStyle:"italic"}}>No pending matches.</div>}
+          </div>
+        </div>
+
+        {/* Reset / forfeit */}
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Match Actions</div>
+          <div style={{display:"flex",flexDirection:"column",gap:4,maxHeight:240,overflowY:"auto"}}>
+            {curMatches.sort((a,b) => a.round - b.round || a.matchNum - b.matchNum).map(m => (
+              <div key={m.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,background:C.card2,borderRadius:6,padding:"6px 8px"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.player1||"TBD"} vs {m.player2||"TBD"}</div>
+                  <div style={{fontSize:9,color:C.muted}}>Wk {m.round} · {m.roundType==="regular"?"Reg":m.roundType} · {m.status==="complete"?<span style={{color:C.greenLt}}>{m.winner==="Tie"?"Tie":`${m.winner} won`}{m.forfeit?" (forfeit)":""}</span>:<span>pending</span>}</div>
+                </div>
+                {m.status === "complete"
+                  ? <button onClick={()=>{if(confirm(`Reset this match? Scores will be cleared and players can re-record.`)) resetMatch(m.id);}} style={{...btnS(false),padding:"4px 8px",fontSize:10}}>↺ Reset</button>
+                  : (m.player1 && m.player2 && <button onClick={()=>setForfeitTarget(forfeitTarget===m.id?null:m.id)} style={{...btnS(forfeitTarget===m.id),padding:"4px 8px",fontSize:10}}>Forfeit</button>)
+                }
+              </div>
+            ))}
+          </div>
+          {forfeitTarget && (() => {
+            const m = curMatches.find(x => x.id === forfeitTarget);
+            if (!m) return null;
+            return <div style={{marginTop:6,padding:"8px 10px",background:"rgba(212,184,74,0.06)",border:`1px solid ${C.gold}`,borderRadius:6,fontSize:11}}>
+              <div style={{marginBottom:6}}>Declare winner of <strong>{m.player1} vs {m.player2}</strong>:</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={async()=>{await forfeitMatch(m.id, m.player1); setForfeitTarget(null);}} style={{...btnS(true),padding:"4px 10px",fontSize:11}}>{m.player1}</button>
+                <button onClick={async()=>{await forfeitMatch(m.id, m.player2); setForfeitTarget(null);}} style={{...btnS(true),padding:"4px 10px",fontSize:11}}>{m.player2}</button>
+                <button onClick={async()=>{await forfeitMatch(m.id, "Tie"); setForfeitTarget(null);}} style={{...btnS(false),padding:"4px 10px",fontSize:11}}>Tie</button>
+                <button onClick={()=>setForfeitTarget(null)} style={{...btnS(false),padding:"4px 10px",fontSize:11,color:C.muted}}>Cancel</button>
+              </div>
+            </div>;
+          })()}
+        </div>
+
+        {/* Per-player handicap override */}
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Player Handicaps</div>
+          <div style={{fontSize:9,color:C.muted,marginBottom:6}}>Override the displayed handicap for a player in this league. Doesn't affect scoring.</div>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {(curLeague.players||[]).map(p => {
+              const current = handicaps[p];
+              const draftKey = p;
+              const draftVal = hcpDrafts[draftKey] != null ? hcpDrafts[draftKey] : (current != null ? String(current) : "");
+              return (
+                <div key={p} style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
+                  <div style={{flex:1,fontWeight:600}}>{p}</div>
+                  <input value={draftVal} onChange={e=>setHcpDrafts(d=>({...d,[draftKey]:e.target.value}))} placeholder="—" inputMode="numeric" style={{...inputS,width:60,textAlign:"center"}}/>
+                  <button onClick={async()=>{const v=draftVal.trim();await setLeagueHandicap(curLeague.id, p, v===""?null:parseInt(v,10));setHcpDrafts(d=>{const n={...d};delete n[draftKey];return n;});}} style={{...btnS(true),padding:"4px 8px",fontSize:10}}>Save</button>
+                  {current != null && <button onClick={async()=>{await setLeagueHandicap(curLeague.id, p, null);setHcpDrafts(d=>{const n={...d};delete n[draftKey];return n;});}} style={{...btnS(false),padding:"4px 8px",fontSize:10}}>Clear</button>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>}
 
       {/* My pending matches */}
       {leagueView==="standings"&&myPending.length>0&&<div style={{background:"rgba(74,170,74,0.06)",borderRadius:12,padding:14,border:`1px solid ${C.greenLt}`}}>
@@ -151,7 +328,7 @@ export default function LeagueTab({
       </div>}
 
       {/* Standings table */}
-      {leagueView==="standings"&&<div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:400}}><thead><tr style={{background:C.accent}}><th style={{padding:"8px 6px",textAlign:"left"}}>#</th><th style={{padding:"8px 4px",textAlign:"left"}}>Player</th><th style={{padding:"8px 4px",textAlign:"center"}}>Pts</th><th style={{padding:"8px 4px",textAlign:"center"}}>W</th><th style={{padding:"8px 4px",textAlign:"center"}}>L</th><th style={{padding:"8px 4px",textAlign:"center"}}>T</th><th style={{padding:"8px 4px",textAlign:"center"}}>+/-</th><th style={{padding:"8px 4px",textAlign:"center"}}>Avg</th></tr></thead><tbody>{dynStandings.map((s,i)=>{const fmt=LEAGUE_FORMATS[curLeague.players?.length];const inPO=fmt&&i<fmt.playoffSize;return(<tr key={s.player} style={{borderTop:`1px solid ${C.border}`,background:inPO?"rgba(74,170,74,0.04)":"transparent"}}><td style={{padding:"8px 6px",fontWeight:700,color:i===0?C.gold:inPO?C.greenLt:C.muted}}>{i+1}</td><td style={{padding:"8px 4px",fontWeight:600,fontSize:11,color:s.player===me?C.greenLt:C.text,cursor:"pointer"}} onClick={()=>openPlayerProfile(s.player)}>{s.player}{s.player===me?" (you)":""}</td><td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:C.gold}}>{s.pts}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.greenLt}}>{s.w}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.red}}>{s.l}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.muted}}>{s.t}</td><td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:s.diff<0?C.greenLt:s.diff>0?C.red:C.muted}}>{s.diff===0?"E":s.diff>0?`+${s.diff}`:s.diff}</td><td style={{padding:"8px 4px",textAlign:"center"}}>{s.avg||"—"}</td></tr>);})}</tbody></table></div>{LEAGUE_FORMATS[curLeague.players?.length]&&<div style={{padding:"8px 12px",background:C.card2,fontSize:10,color:C.muted,borderTop:`1px solid ${C.border}`}}>Top {LEAGUE_FORMATS[curLeague.players.length].playoffSize} qualify · Win=2pts, Tie=1pt</div>}</div>}
+      {leagueView==="standings"&&(()=>{const lgHcps=curLeague.handicaps||{};const showHcpCol=Object.keys(lgHcps).length>0;return <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:400}}><thead><tr style={{background:C.accent}}><th style={{padding:"8px 6px",textAlign:"left"}}>#</th><th style={{padding:"8px 4px",textAlign:"left"}}>Player</th>{showHcpCol&&<th style={{padding:"8px 4px",textAlign:"center"}}>HDCP</th>}<th style={{padding:"8px 4px",textAlign:"center"}}>Pts</th><th style={{padding:"8px 4px",textAlign:"center"}}>W</th><th style={{padding:"8px 4px",textAlign:"center"}}>L</th><th style={{padding:"8px 4px",textAlign:"center"}}>T</th><th style={{padding:"8px 4px",textAlign:"center"}}>+/-</th><th style={{padding:"8px 4px",textAlign:"center"}}>Avg</th></tr></thead><tbody>{dynStandings.map((s,i)=>{const fmt=LEAGUE_FORMATS[curLeague.players?.length];const inPO=fmt&&i<fmt.playoffSize;const hcp=lgHcps[s.player];return(<tr key={s.player} style={{borderTop:`1px solid ${C.border}`,background:inPO?"rgba(74,170,74,0.04)":"transparent"}}><td style={{padding:"8px 6px",fontWeight:700,color:i===0?C.gold:inPO?C.greenLt:C.muted}}>{i+1}</td><td style={{padding:"8px 4px",fontWeight:600,fontSize:11,color:s.player===me?C.greenLt:C.text,cursor:"pointer"}} onClick={()=>openPlayerProfile(s.player)}>{s.player}{s.player===me?" (you)":""}</td>{showHcpCol&&<td style={{padding:"8px 4px",textAlign:"center",color:hcp!=null?(hcp<0?C.greenLt:hcp>0?C.red:C.text):C.muted}}>{hcp!=null?(hcp>0?`+${hcp}`:hcp):"—"}</td>}<td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:C.gold}}>{s.pts}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.greenLt}}>{s.w}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.red}}>{s.l}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.muted}}>{s.t}</td><td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:s.diff<0?C.greenLt:s.diff>0?C.red:C.muted}}>{s.diff===0?"E":s.diff>0?`+${s.diff}`:s.diff}</td><td style={{padding:"8px 4px",textAlign:"center"}}>{s.avg||"—"}</td></tr>);})}</tbody></table></div>{LEAGUE_FORMATS[curLeague.players?.length]&&<div style={{padding:"8px 12px",background:C.card2,fontSize:10,color:C.muted,borderTop:`1px solid ${C.border}`}}>Top {LEAGUE_FORMATS[curLeague.players.length].playoffSize} qualify · Win=2pts, Tie=1pt</div>}</div>;})()}
 
       {/* Schedule */}
       {leagueView==="schedule"&&<div style={{display:"flex",flexDirection:"column",gap:10}}>{Array.from({length:totalRds},(_,ri)=>{const rd=ri+1;const rm=regMatches.filter(m=>m.round===rd);if(!rm.length)return null;return(<div key={rd}><div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:6}}>Round {rd}</div>{rm.map(m=>{const my=m.player1===me||m.player2===me;const p1Score=m.p1Total!=null?(m.status==="complete"||m.player1===me?String(m.p1Total):"🔒"):"";const p2Score=m.p2Total!=null?(m.status==="complete"||m.player2===me?String(m.p2Total):"🔒"):"";return(<div key={m.id} style={{background:my?"rgba(74,170,74,0.06)":C.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${my?C.greenLt:C.border}`,marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}><div style={{flex:1}}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:m.winner===m.player1?700:400,color:m.winner===m.player1?C.greenLt:C.text}}>{m.player1}</span><span style={{fontWeight:700}}>{p1Score}</span></div><div style={{display:"flex",justifyContent:"space-between",marginTop:2}}><span style={{fontWeight:m.winner===m.player2?700:400,color:m.winner===m.player2?C.greenLt:C.text}}>{m.player2}</span><span style={{fontWeight:700}}>{p2Score}</span></div></div><div style={{textAlign:"right",marginLeft:12,minWidth:70}}><div style={{fontSize:10,color:C.muted}}>{m.course||"TBD"}</div>{m.status==="complete"?<div style={{fontWeight:700,fontSize:11,color:m.winner==="Tie"?C.muted:C.gold,marginTop:2}}>{m.winner==="Tie"?"Tie":m.winner}</div>:my?<button onClick={()=>playLeagueMatch(m.id)} style={{...btnS(true),padding:"4px 10px",fontSize:10,marginTop:2}}>Play</button>:<div style={{fontSize:10,color:C.muted,marginTop:2}}>Pending</div>}</div></div>);})}</div>);})}</div>}
@@ -179,8 +356,38 @@ export default function LeagueTab({
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontWeight:700,fontSize:15}}>Create New League</div><button onClick={()=>setShowCreate(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:16}}>✕</button></div>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         <div><div style={{fontSize:11,color:C.muted,marginBottom:4}}>League Name</div><input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Season 2" style={inputS}/></div>
-        <button onClick={async()=>{if(!newName.trim())return;await createLeague(newName.trim(),false);setNewName("");setShowCreate(false);}} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
-        <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>You'll get an invite code to share</div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Match Length</div>
+          <div style={{display:"flex",gap:6}}>
+            {[[18,"18 holes"],[9,"9 holes"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setNewHoleCount(v)} style={{flex:1,padding:"8px 6px",borderRadius:6,border:newHoleCount===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newHoleCount===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:12,fontWeight:newHoleCount===v?700:400}}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Schedule Type</div>
+          <div style={{display:"flex",gap:6}}>
+            {[["single","Single round-robin"],["double","Double round-robin"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setNewScheduleType(v)} style={{flex:1,padding:"8px 6px",borderRadius:6,border:newScheduleType===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newScheduleType===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:11,fontWeight:newScheduleType===v?700:400}}>{l}</button>
+            ))}
+          </div>
+          <div style={{fontSize:9,color:C.muted,marginTop:4}}>{newScheduleType==="double"?"Each pair plays twice — twice as many weeks":"Each pair plays once"}</div>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Course Rotation</div>
+          <div style={{display:"flex",gap:6}}>
+            {[["free","Free choice"],["scheduled","Course-of-the-week"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setNewCourseRotation(v)} style={{flex:1,padding:"8px 6px",borderRadius:6,border:newCourseRotation===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newCourseRotation===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:11,fontWeight:newCourseRotation===v?700:400}}>{l}</button>
+            ))}
+          </div>
+          <div style={{fontSize:9,color:C.muted,marginTop:4}}>{newCourseRotation==="scheduled"?"You'll pick a course per week in the lobby":"First player to tee off picks the course"}</div>
+        </div>
+        <button onClick={async()=>{
+          if(!newName.trim())return;
+          await createLeague(newName.trim(),{holeCount:newHoleCount,scheduleType:newScheduleType,courseRotation:newCourseRotation});
+          setNewName("");setNewHoleCount(18);setNewScheduleType("single");setNewCourseRotation("free");setShowCreate(false);
+        }} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
+        <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>{MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players · You'll get an invite code to share</div>
       </div>
     </div>}
     {showJoinCode&&<div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.blue}`,marginBottom:10}}>
