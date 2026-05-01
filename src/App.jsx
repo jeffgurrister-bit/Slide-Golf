@@ -36,6 +36,11 @@ export default function App(){
   const[hideScores,setHideScores]=useState(false);const[nine,setNine]=useState(0);const[newPlayerName,setNewPlayerName]=useState("");
   const[showScorecard,setShowScorecard]=useState(false);
   const[useHdcp,setUseHdcp]=useState(false);const[hdcps,setHdcps]=useState({});
+  // Quick Score doesn't capture per-shot data, so putts have to be entered
+  // separately (otherwise the Avg Putts column on the leaderboard ignores
+  // these rounds). Stored per-player on the active round; saveRound uses it
+  // as a fallback when there are no shot logs.
+  const[quickPutts,setQuickPutts]=useState({});
   const[creating,setCreating]=useState(false);const[ccName,setCcName]=useState("");const[ccLevel,setCcLevel]=useState("Medium");
   const[ccTournament,setCcTournament]=useState("");const[ccHoles,setCcHoles]=useState(()=>Array.from({length:18},(_,i)=>({num:i+1,par:4,rangeMin:10,rangeMax:12})));const[ccNine,setCcNine]=useState(0);
   const[leagueView,setLeagueView]=useState("standings");const[leagueRdFilter,setLeagueRdFilter]=useState("all");
@@ -144,7 +149,16 @@ export default function App(){
 
   useEffect(()=>{
     if(!liveData||!me)return;
-    setRoundPlayers(prev=>{const all=new Set([...prev,...liveData.players]);return[...all];});
+    // Only update roundPlayers when the player list actually changed — the
+    // snapshot fires on every write (scores, etc.) and we don't want to
+    // clobber any local ordering that didn't come from the server.
+    setRoundPlayers(prev=>{
+      const incoming=liveData.players||[];
+      const sameMembers=prev.length===incoming.length&&incoming.every(p=>prev.includes(p));
+      if(sameMembers)return prev;
+      const all=new Set([...prev,...incoming]);
+      return [...all];
+    });
     if(isKeeperHost)return;
     setAllScores(prev=>{
       const m={...prev};
@@ -157,7 +171,32 @@ export default function App(){
   },[liveData,me,liveScoreMode,isKeeperHost]);
 
   const scoresJson=JSON.stringify(allScores);
-  useEffect(()=>{if(!liveId||!me)return;const t=setTimeout(()=>syncMyScores(),600);return()=>clearTimeout(t);},[scoresJson,liveId]);
+  // Re-trigger sync on mode switch too, otherwise a host who flips from
+  // self → keeper has stale closure semantics for 600ms.
+  useEffect(()=>{if(!liveId||!me)return;const t=setTimeout(()=>syncMyScores(),600);return()=>clearTimeout(t);},[scoresJson,liveId,liveScoreMode,me]);
+
+  // Stale live-round cleanup. Runs once when leagues/me load; only the host
+  // of each room executes the write, so we don't pile up duplicate writes.
+  // Threshold: 6 hours of inactivity → mark finished.
+  useEffect(()=>{
+    if(!loaded||!me)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const snap=await getDocs(query(collection(db,"liveRounds"),where("host","==",me),where("status","==","playing")));
+        const cutoff=Date.now()-6*60*60*1000;
+        for(const d of snap.docs){
+          if(cancelled)return;
+          const data=d.data();
+          const last=data.lastActivity||data.createdAt||0;
+          if(last<cutoff){
+            try{await updateDoc(d.ref,{status:"finished",autoFinishedAt:Date.now()});}catch(e){}
+          }
+        }
+      }catch(e){/* ignore — best effort */}
+    })();
+    return ()=>{cancelled=true;};
+  },[loaded,me]);
 
   // ─── DB HELPERS ────────────────────────────────────────
   async function addPlayerToDB(name){const n=name.trim();if(!n||players.some(p=>p.name===n))return;await addDoc(collection(db,"players"),{name:n,createdAt:Date.now()});}
@@ -194,7 +233,7 @@ export default function App(){
     const playersArr=[me,...roundPlayers.filter(p=>p!==me)];
     const scoresObj={};const hioObj={};
     playersArr.forEach(p=>{scoresObj[p]=allScores[p]||Array(18).fill(null);hioObj[p]=0;});
-    const ref=await addDoc(collection(db,"liveRounds"),{code,host:me,courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,tournament:selCourse.tournament||""},players:playersArr,status:"playing",scores:scoresObj,holeInOnes:hioObj,hideScores,useHdcp,hdcps,activeTourney:activeTourney||null,activeLeagueMatch:activeLeagueMatch||null,scoreMode:liveScoreMode,createdAt:Date.now()});
+    const ref=await addDoc(collection(db,"liveRounds"),{code,host:me,courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,tournament:selCourse.tournament||""},players:playersArr,status:"playing",scores:scoresObj,holeInOnes:hioObj,hideScores,useHdcp,hdcps,activeTourney:activeTourney||null,activeLeagueMatch:activeLeagueMatch||null,scoreMode:liveScoreMode,createdAt:Date.now(),lastActivity:Date.now()});
     setLiveId(ref.id);
   }
   async function joinLive(){
@@ -244,12 +283,15 @@ export default function App(){
     if(!liveId||!me)return;
     try{
       const ref=doc(db,"liveRounds",liveId);const snap=await getDoc(ref);if(!snap.exists())return;
+      // lastActivity is updated on every sync so the stale-room cleanup
+      // sweeper knows to leave this room alone.
       if(liveScoreMode==="keeper"&&liveData?.host===me){
-        const updates={};roundPlayers.forEach(p=>{updates[`scores.${p}`]=allScores[p]||Array(18).fill(null);updates[`holeInOnes.${p}`]=countHIO(allScores[p]);});
+        const updates={lastActivity:Date.now()};
+        roundPlayers.forEach(p=>{updates[`scores.${p}`]=allScores[p]||Array(18).fill(null);updates[`holeInOnes.${p}`]=countHIO(allScores[p]);});
         await updateDoc(ref,updates);
       }else if(liveScoreMode==="self"){
         const sc=allScores[me]||Array(18).fill(null);
-        await updateDoc(ref,{[`scores.${me}`]:sc,[`holeInOnes.${me}`]:countHIO(sc)});
+        await updateDoc(ref,{[`scores.${me}`]:sc,[`holeInOnes.${me}`]:countHIO(sc),lastActivity:Date.now()});
       }
     }catch(e){}
   }
@@ -578,7 +620,7 @@ export default function App(){
   async function handleGenerate(diff){const en=[...allCourses.map(c=>c.name),...PGA_2026.map(c=>c.name)];const course=generateCourse(diff,en);const id=await saveCoursetoDB(course);setSelCourse({...course,id,generated:true});setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");}
 
   // ─── PLAY FUNCTIONS ────────────────────────────────────
-  function startRound(course){setSelCourse(course);setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setActiveTourney(null);setActiveLeagueMatch(null);setLiveId(null);setLiveData(null);setSavedHoleStates({});setHoleCount(18);setNineType("front");setTab("play");}
+  function startRound(course){setSelCourse(course);setRoundPlayers([]);setAllScores({});setAllShotLogs({});setQuickPutts({});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setActiveTourney(null);setActiveLeagueMatch(null);setLiveId(null);setLiveData(null);setSavedHoleStates({});setHoleCount(18);setNineType("front");setTab("play");}
   function addToRound(name){if(!name||roundPlayers.includes(name))return;setRoundPlayers(p=>[...p,name]);setAllScores(s=>({...s,[name]:Array(18).fill(null)}));setAllShotLogs(s=>({...s,[name]:Array.from({length:18},()=>[])}));}
   function beginPlay(){
     if(!roundPlayers.length||!selCourse)return;setPlayMode("holes");
@@ -640,7 +682,12 @@ export default function App(){
       const total=playedScores.reduce((s,v)=>s+(v||0),0);const hio=countHIO(playedScores);const hd=useHdcp?(hdcps[p]||null):null;
       const logs = allShotLogs[p] || [];
       const playedLogs = logs.slice(startIdx,endIdx);
-      const derivedPutts = playedLogs.reduce((sum, holeLogs) => sum + (holeLogs || []).filter(s => s.type === "putt").length, 0) || null;
+      // Prefer the per-shot putts derived from shotLogs; fall back to the
+       // Quick-Score-entered total putts so those rounds aren't excluded
+       // from the Avg Putts stats.
+      const shotLogPutts = playedLogs.reduce((sum, holeLogs) => sum + (holeLogs || []).filter(s => s.type === "putt").length, 0);
+      const quickPuttsValue = quickPutts[p];
+      const derivedPutts = shotLogPutts > 0 ? shotLogPutts : (quickPuttsValue != null && quickPuttsValue !== "" ? Number(quickPuttsValue) : null);
       // Firestore doesn't support nested arrays — convert to map {0: [...shots], 1: [...shots]}
       const hasShots = playedLogs.some(h => h && h.length > 0);
       const shotLogsMap = {};
@@ -664,6 +711,9 @@ export default function App(){
           hidden:hideScores, autoHidden:hideScores&&!!activeLeagueMatch, hdcp:hd, adjTotal:hd?total-hd:null,
           sealedMatchId:activeLeagueMatch&&activeLeagueMatch.matchId!=="s1-final"?activeLeagueMatch.matchId:null,
           matchType: matchType,
+          // Par-3 rounds are excluded from handicap/aggregate stats but kept
+          // visible in Recent Rounds and per-course leaderboards.
+          par3: !!selCourse.par3,
           shotLogs: hasShots ? shotLogsMap : null,
           totalPutts: derivedPutts,
           courseHoles: playedHoles
@@ -966,23 +1016,53 @@ export default function App(){
 
   // ─── LOADING / LOGIN ──────────────────────────────────
   if(!loaded)return<div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:C.greenLt,fontSize:18}}>Loading Slide Golf...</div></div>;
-  if(!me)return(
-    <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Segoe UI',system-ui,sans-serif",color:C.text}}>
-      <div style={{background:C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${C.green}`,display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:C.accent,border:`2px solid ${C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>⛳</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase"}}>Slide Golf</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>LEAGUE TRACKER</div></div></div>
-      <div style={{maxWidth:400,margin:"0 auto",padding:24,display:"flex",flexDirection:"column",gap:16}}>
-        <div style={{textAlign:"center",padding:"24px 0"}}><div style={{fontSize:22,fontWeight:700}}>Who are you?</div><div style={{color:C.muted,fontSize:13,marginTop:4}}>Pick your name to get started</div></div>
-        {players.map(p=>(<button key={p.id} onClick={()=>selectMe(p.name)} style={{...btnS(false),width:"100%",padding:16,fontSize:16,textAlign:"center"}}>{p.name}</button>))}
-        <div style={{borderTop:`1px solid ${C.border}`,paddingTop:16,marginTop:8}}><div style={{fontSize:13,color:C.muted,marginBottom:8}}>New player?</div><div style={{display:"flex",gap:8}}><input value={newPlayerName} onChange={e=>setNewPlayerName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&newPlayerName.trim()){addPlayerToDB(newPlayerName);setNewPlayerName("");}}} placeholder="Your name..." style={inputS}/><button onClick={()=>{if(newPlayerName.trim()){addPlayerToDB(newPlayerName);setNewPlayerName("");}}} style={{...btnS(true),whiteSpace:"nowrap"}}>Add</button></div></div>
+  if(!me){
+    const trimmed=newPlayerName.trim();
+    const exists=trimmed&&players.some(p=>p.name.toLowerCase()===trimmed.toLowerCase());
+    const matchedExisting=exists?players.find(p=>p.name.toLowerCase()===trimmed.toLowerCase()).name:null;
+    const handleContinue=async()=>{
+      if(!trimmed)return;
+      if(matchedExisting){selectMe(matchedExisting);}
+      else{await addPlayerToDB(trimmed);selectMe(trimmed);}
+      setNewPlayerName("");
+    };
+    const buttonLabel=trimmed?(exists?`Continue as ${matchedExisting}`:`Create profile · ${trimmed}`):"Continue";
+    return (
+      <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Segoe UI',system-ui,sans-serif",color:C.text}}>
+        <div style={{background:C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${C.green}`,display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:C.accent,border:`2px solid ${C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>⛳</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase"}}>Slide Golf</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>LEAGUE TRACKER</div></div></div>
+        <div style={{maxWidth:400,margin:"0 auto",padding:24,display:"flex",flexDirection:"column",gap:16}}>
+          <div style={{textAlign:"center",padding:"20px 0 4px"}}>
+            <div style={{fontSize:22,fontWeight:700}}>Welcome to Slide Golf</div>
+            <div style={{color:C.muted,fontSize:13,marginTop:6}}>{players.length===0?"Pick a name to get started":"Sign in or create a new profile"}</div>
+          </div>
+          {/* Smart sign-in: type your name, button does the right thing */}
+          <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+            <div style={{fontSize:11,color:C.muted,marginBottom:6}}>Your name</div>
+            <input value={newPlayerName} onChange={e=>setNewPlayerName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")handleContinue();}} placeholder="e.g. Jeff Gurrister" autoFocus style={{...inputS,width:"100%"}}/>
+            <button onClick={handleContinue} disabled={!trimmed} style={{...btnS(!!trimmed),width:"100%",padding:14,fontSize:14,marginTop:10,opacity:trimmed?1:0.5,cursor:trimmed?"pointer":"not-allowed"}}>{buttonLabel}</button>
+            {trimmed&&!exists&&<div style={{fontSize:10,color:C.muted,marginTop:6,textAlign:"center"}}>No existing profile found — we'll create one for you.</div>}
+            {exists&&<div style={{fontSize:10,color:C.greenLt,marginTop:6,textAlign:"center"}}>✓ Existing profile found.</div>}
+          </div>
+          {/* Quick-pick existing players */}
+          {players.length>0&&<div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:8,textAlign:"center"}}>or pick someone already here</div>
+            <div style={{display:"grid",gridTemplateColumns:players.length>4?"1fr 1fr":"1fr",gap:6}}>
+              {players.map(p=>(<button key={p.id} onClick={()=>selectMe(p.name)} style={{padding:"10px 12px",borderRadius:8,border:`1px solid ${C.border}`,background:C.card2,color:C.text,cursor:"pointer",fontSize:13,fontWeight:500,textAlign:"center"}}>{p.name}</button>))}
+            </div>
+          </div>}
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 
   // ─── COMPUTED VALUES ───────────────────────────────────
   const playerNames=players.map(p=>p.name);
   const champFps=championshipFingerprints(leagueMatches);
   const modeMatch=r=>statsMode==="league"?isLeagueRound(r,champFps):statsMode==="regular"?!isLeagueRound(r,champFps):true;
   const computeStatsFor=(holeCount)=>playerNames.map(name=>{
-    const pr=rounds.filter(r=>r.player===name&&roundHoleCount(r)===holeCount&&modeMatch(r));
+    // Par-3 rounds are excluded from aggregate stats per design — they're
+    // tracked separately and shouldn't drag down a player's handicap.
+    const pr=rounds.filter(r=>r.player===name&&roundHoleCount(r)===holeCount&&!r.par3&&modeMatch(r));
     const unsealed=pr.filter(r=>!isRoundSealed(r,leagueMatches,me));
     const hcp=calcHandicap(unsealed);
     const best=unsealed.length?Math.min(...unsealed.map(r=>r.total)):null;
@@ -1048,7 +1128,7 @@ export default function App(){
         {tab==="home"&&<HomeTab me={me} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults} openRoundDetail={openRoundDetail}/>}
         {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} updateLeagueConfig={updateLeagueConfig} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile} renameLeague={renameLeague} swapWeekCourse={swapWeekCourse} setMatchCourse={setMatchCourse} resetMatch={resetMatch} forfeitMatch={forfeitMatch} setLeagueHandicap={setLeagueHandicap} extendMatchDeadline={extendMatchDeadline} replacePlayer={replacePlayer} addPlayerMidSeason={addPlayerMidSeason} removePlayerMidSeason={removePlayerMidSeason}/>}
         {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords} rounds={rounds} leagueMatches={leagueMatches} me={me}/>}
-        {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell} holeCount={holeCount} setHoleCount={setHoleCount} nineType={nineType} setNineType={setNineType} activeLeagueMatch={activeLeagueMatch}/></>}
+        {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} quickPutts={quickPutts} setQuickPutts={setQuickPutts} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell} holeCount={holeCount} setHoleCount={setHoleCount} nineType={nineType} setNineType={setNineType} activeLeagueMatch={activeLeagueMatch}/></>}
         {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
         {tab==="stats"&&<StatsTab playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
       </div>
