@@ -13,7 +13,7 @@ import { PGA_2026, getPGACourse } from "./data/pga2026.js";
 import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, RelPar, genLiveCode, isRoundSealed, computeCourseRecords, computeAchievements, isLeagueRound, isRoundHiddenForDisplay, championshipFingerprints, roundHoleCount } from "./utils/helpers.jsx";
 import { generateCourse } from "./utils/generate.js";
 import { C, btnS, inputS, smallInput } from "./utils/theme.js";
-import { generateRRSchedule, LEAGUE_FORMATS, buildPlayoffMatches, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS, PLAYOFF_SIZE_OPTIONS, effectivePlayoffSize } from "./data/league.js";
+import { generateRRSchedule, LEAGUE_FORMATS, buildPlayoffMatches, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS, PLAYOFF_SIZE_OPTIONS, effectivePlayoffSize, nextPlayoffSlot } from "./data/league.js";
 
 // ─── COMPONENT IMPORTS ──────────────────────────────────
 import HomeTab from "./components/HomeTab.jsx";
@@ -112,7 +112,12 @@ export default function App(){
         if(cancelled)return;
         const dayMs=86_400_000;
         const deadlineWindowMs=lg.weeklyDeadlineDays*dayMs;
-        const matches=leagueMatches.filter(m=>m.leagueId===lg.id&&m.roundType==="regular"&&m.status!=="complete");
+        // Skip catchUp matches — their synthetic round numbers sit past
+        // totalRounds and would compute deadlines in the past, so the
+        // checker would forfeit them the moment they're created. Catch-ups
+        // either follow the explicit per-match deadlineOverride or have no
+        // deadline at all.
+        const matches=leagueMatches.filter(m=>m.leagueId===lg.id&&m.roundType==="regular"&&m.status!=="complete"&&!m.catchUp);
         for(const m of matches){
           if(cancelled)return;
           const weekStart=lg.startedAt+(m.round-1)*7*dayMs;
@@ -286,8 +291,19 @@ export default function App(){
       // lastActivity is updated on every sync so the stale-room cleanup
       // sweeper knows to leave this room alone.
       if(liveScoreMode==="keeper"&&liveData?.host===me){
+        // Iterate liveData.players, not local roundPlayers — local can lag
+        // a snapshot behind, and writing a null score for a player who just
+        // joined would clobber their first save.
+        const players=liveData?.players||roundPlayers;
         const updates={lastActivity:Date.now()};
-        roundPlayers.forEach(p=>{updates[`scores.${p}`]=allScores[p]||Array(18).fill(null);updates[`holeInOnes.${p}`]=countHIO(allScores[p]);});
+        players.forEach(p=>{
+          // Only write players we actually have scores for; skip joiners we
+          // haven't seen locally yet.
+          if(allScores[p]){
+            updates[`scores.${p}`]=allScores[p];
+            updates[`holeInOnes.${p}`]=countHIO(allScores[p]);
+          }
+        });
         await updateDoc(ref,updates);
       }else if(liveScoreMode==="self"){
         const sc=allScores[me]||Array(18).fill(null);
@@ -300,13 +316,31 @@ export default function App(){
   async function joinTourney(tId){if(tEntries.some(e=>e.tournamentId===tId&&e.player===me))return;const hd=parseInt(myTHdcp)||null;await addDoc(collection(db,"pgaTourneys"),{tournamentId:tId,player:me,round:0,hdcp:hd,createdAt:Date.now()});}
   async function updateMyTourneyHdcp(tId){const entry=tEntries.find(e=>e.tournamentId===tId&&e.player===me&&e.round===0);const hd=parseInt(myTHdcp)||null;if(entry)await updateDoc(doc(db,"pgaTourneys",entry.id),{hdcp:hd});}
   function playTourneyRound(pga){
-    const tid=pga.start;const myRnds=tEntries.filter(e=>e.tournamentId===tid&&e.player===me&&e.round>0);const nextRd=myRnds.length+1;if(nextRd>4)return;
+    const tid=pga.start;
+    const myRnds=tEntries.filter(e=>e.tournamentId===tid&&e.player===me&&e.round>0);
+    // Use max round + 1 instead of length+1 so a non-contiguous run (R1 + R3
+    // saved, R2 missing) doesn't double-write R3.
+    const playedRounds=myRnds.map(r=>r.round);
+    const nextRd=Math.max(0,...playedRounds)+1;
+    if(nextRd>4)return;
     if(!tEntries.some(e=>e.tournamentId===tid&&e.player===me)){const hd=parseInt(myTHdcp)||null;addDoc(collection(db,"pgaTourneys"),{tournamentId:tid,player:me,round:0,hdcp:hd,createdAt:Date.now()});}
     setActiveTourney({key:tid,round:nextRd,tournament:pga.tournament});
     const course={name:pga.name,level:pga.level,holes:pga.holes,pga:true,tournament:pga.tournament};
-    setSelCourse(course);setRoundPlayers([me]);setAllScores({[me]:Array(18).fill(null)});setAllShotLogs({[me]:Array.from({length:18},()=>[])});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");
+    setSelCourse(course);setRoundPlayers([me]);setAllScores({[me]:Array(18).fill(null)});setAllShotLogs({[me]:Array.from({length:18},()=>[])});
+    // Reset everything else that could leak from a prior round (live, league
+    // match, savedHoleStates, hole count for 9-hole leaguers, hide-scores).
+    setActiveLeagueMatch(null);setLiveId(null);setLiveData(null);setSavedHoleStates({});
+    setHoleCount(18);setNineType("front");setQuickPutts({});
+    setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");
   }
-  function playCasualPGA(pga){setActiveTourney(null);const course={name:pga.name,level:pga.level,holes:pga.holes,pga:true,tournament:pga.tournament};setSelCourse(course);setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setTab("play");}
+  function playCasualPGA(pga){
+    setActiveTourney(null);
+    const course={name:pga.name,level:pga.level,holes:pga.holes,pga:true,tournament:pga.tournament};
+    setSelCourse(course);setRoundPlayers([]);setAllScores({});setAllShotLogs({});
+    setActiveLeagueMatch(null);setLiveId(null);setLiveData(null);setSavedHoleStates({});
+    setHoleCount(18);setNineType("front");setQuickPutts({});
+    setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");
+  }
 
   // ─── LEAGUE FUNCTIONS ─────────────────────────────────
   async function createLeague(name, opts = {}) {
@@ -529,8 +563,12 @@ export default function App(){
     const d = snap.docs[0]; const data = d.data();
     if (data.status !== "lobby") { alert("This league has already started!"); return; }
     if (data.players?.includes(me)) { setSelectedLeague(d.id); return; }
-    const pls = [...(data.players || []), me];
-    await updateDoc(doc(db,"leagues",d.id), { players: pls });
+    if ((data.players?.length || 0) >= MAX_LEAGUE_PLAYERS) {
+      alert(`This league is full (${MAX_LEAGUE_PLAYERS} players max).`);
+      return;
+    }
+    // arrayUnion is race-safe — two simultaneous joiners both land cleanly.
+    await updateDoc(doc(db,"leagues",d.id), { players: arrayUnion(me) });
     setSelectedLeague(d.id);
   }
 
@@ -609,7 +647,9 @@ export default function App(){
     if (!match || match.status !== "complete") return;
     const seen = match.resultsSeenBy || [];
     if (seen.includes(me)) return;
-    await updateDoc(doc(db, "leagueMatches", matchId), { resultsSeenBy: [...seen, me] });
+    // arrayUnion so two finalists tapping reveal at the same moment don't
+    // race-overwrite each other's flag.
+    await updateDoc(doc(db, "leagueMatches", matchId), { resultsSeenBy: arrayUnion(me) });
   }
 
   // ─── COURSE CREATOR ────────────────────────────────────
@@ -654,18 +694,25 @@ export default function App(){
       return{...prev,[player]:ps};
     });
   }
+  // Returns the new savedHoleStates map so callers that immediately navigate
+  // can read the just-saved state without waiting for setState to flush.
+  // Without this, goToPrevHole/finishHole read stale savedHoleStates and
+  // re-init the destination hole, wiping any data that was there.
   function saveCurrentHole(){
-    setSavedHoleStates(prev=>({...prev,[curHole]:{...holeState}}));
+    const nextSaved={...savedHoleStates,[curHole]:{...holeState}};
+    setSavedHoleStates(nextSaved);
     setAllScores(prev=>{const ns={...prev};roundPlayers.forEach(p=>{const ps=holeState[p];ns[p]=[...(ns[p]||Array(18).fill(null))];ns[p][curHole]=ps?.done?ps.score:(ps?.shots?.length>0?ps.shots.filter(s=>s.type==="slide"||s.type==="OB").length+(ps.onGreen?ps.putts:0):null);});return ns;});
     setAllShotLogs(prev=>{const ns={...prev};roundPlayers.forEach(p=>{ns[p]=[...(ns[p]||Array.from({length:18},()=>[]))];ns[p][curHole]=[...(holeState[p]?.shots||[])];});return ns;});
+    return nextSaved;
   }
-  function navigateToHole(targetHole){
+  function navigateToHole(targetHole, savedOverride){
     setCurHole(targetHole);
     if(isLive&&liveScoreMode==="self"){const myIdx=roundPlayers.indexOf(me);setCurPlayerIdx(myIdx>=0?myIdx:0);}
-    if(savedHoleStates[targetHole]){setHoleState(savedHoleStates[targetHole]);}else{initHoleFor();}
+    const states=savedOverride||savedHoleStates;
+    if(states[targetHole]){setHoleState(states[targetHole]);}else{initHoleFor();}
   }
-  function finishHole(){saveCurrentHole();const lastHole=holeCount===9?(nineType==="back"?17:8):17;if(curHole<lastHole){navigateToHole(curHole+1);}else setPlayMode("review");}
-  function goToPrevHole(){const firstHole=holeCount===9&&nineType==="back"?9:0;if(curHole<=firstHole)return;saveCurrentHole();navigateToHole(curHole-1);}
+  function finishHole(){const next=saveCurrentHole();const lastHole=holeCount===9?(nineType==="back"?17:8):17;if(curHole<lastHole){navigateToHole(curHole+1,next);}else setPlayMode("review");}
+  function goToPrevHole(){const firstHole=holeCount===9&&nineType==="back"?9:0;if(curHole<=firstHole)return;const next=saveCurrentHole();navigateToHole(curHole-1,next);}
 
   async function saveRound(){
    try{
@@ -785,6 +832,18 @@ export default function App(){
           // unlocked"). If it's still in-progress, notify the opponent that
           // it's their turn.
           if(updates.status==="complete"){
+            // Advance bracket: if this is a playoff match, write the winner
+            // into the next round's open slot before announcing results.
+            if(updates.winner&&updates.winner!=="Tie"&&(match.roundType==="QF"||match.roundType==="SF")){
+              const ps=effectivePlayoffSize(lg);
+              const slot=nextPlayoffSlot(match,ps);
+              if(slot){
+                const next=leagueMatches.find(x=>x.leagueId===match.leagueId&&x.roundType===slot.roundType&&x.matchNum===slot.matchNum);
+                if(next&&!next[slot.slot]){
+                  try{await updateDoc(doc(db,"leagueMatches",next.id),{[slot.slot]:updates.winner});}catch(e){}
+                }
+              }
+            }
             await checkLeagueProgress(match.leagueId);
             const lgName=lg?.name||"League";
             await Promise.all([match.player1, match.player2].filter(Boolean).map(p =>
@@ -792,14 +851,16 @@ export default function App(){
             ));
           } else if(updates.status==="in-progress"){
             // The player(s) who just played are the ones in playersToWrite.
-            // Notify the OTHER finalist if they haven't played yet.
+            // Notify the OTHER finalist if they haven't played yet — but only
+            // on the FIRST non-null write per player so an edit/resave doesn't
+            // re-spam the opponent.
             const lgName=lg?.name||"League";
-            const p1Just = playersToWrite.includes(match.player1);
-            const p2Just = playersToWrite.includes(match.player2);
-            if(p1Just && match.player2 && match.p2Total == null) {
+            const p1FirstWrite = playersToWrite.includes(match.player1) && match.p1Total == null;
+            const p2FirstWrite = playersToWrite.includes(match.player2) && match.p2Total == null;
+            if(p1FirstWrite && match.player2 && match.p2Total == null) {
               await writeNotification(match.player2, "your_turn", { matchId: match.id, leagueId: match.leagueId, leagueName: lgName, opponent: match.player1, roundType: match.roundType });
             }
-            if(p2Just && match.player1 && match.p1Total == null) {
+            if(p2FirstWrite && match.player1 && match.p1Total == null) {
               await writeNotification(match.player1, "your_turn", { matchId: match.id, leagueId: match.leagueId, leagueName: lgName, opponent: match.player2, roundType: match.roundType });
             }
           }
@@ -813,8 +874,13 @@ export default function App(){
     // Pick the lowest qualifying total in this round; that's the actual new
     // record holder. Previously this celebrated the first player iterated,
     // even if a later player in the same round shot lower.
+    // Skip the course-record celebration entirely for sealed league rounds —
+    // the score will leak to the opponent in the notification payload before
+    // they've revealed their own match. Records will surface naturally once
+    // the match unseals (computeCourseRecords reads unsealed rounds).
     let recordBroken = false;
-    if (holeCount === 18) {
+    const isSealedLeagueRound = activeLeagueMatch && activeLeagueMatch.matchId !== "s1-final";
+    if (holeCount === 18 && !isSealedLeagueRound) {
       const courseName = selCourse.name;
       const old = preRecords[courseName];
       let best = null;
@@ -980,11 +1046,39 @@ export default function App(){
         const p1T = isP1 ? newTotal : match.p1Total;
         const p2T = isP1 ? match.p2Total : newTotal;
         if (p1T != null && p2T != null) {
-          if (p1T < p2T) { updates.winner = match.player1; updates.margin = p2T - p1T; }
-          else if (p2T < p1T) { updates.winner = match.player2; updates.margin = p1T - p2T; }
+          // Mirror saveRound's handicap-aware winner determination so an edit
+          // doesn't silently switch back to raw-totals scoring.
+          const lg = leagues.find(l => l.id === match.leagueId);
+          const useHcp = !!lg?.useHandicapScoring;
+          const cap = lg?.handicapCap;
+          const clamp = v => { if (v==null||cap==null) return v; const a=Math.abs(cap); return Math.max(-a, Math.min(a, v)); };
+          const resolveHcp = (player) => {
+            if (!useHcp || !player) return null;
+            if ((lg?.handicapSource||"manual")==="auto") {
+              const pr = rounds.filter(r => r.player===player && (r.holeCount||r.holesPlayed||18)===18);
+              return clamp(calcHandicap(pr));
+            }
+            return clamp(lg?.handicaps?.[player]);
+          };
+          const h1 = resolveHcp(match.player1);
+          const h2 = resolveHcp(match.player2);
+          const adj1 = useHcp && h1!=null ? p1T-h1 : p1T;
+          const adj2 = useHcp && h2!=null ? p2T-h2 : p2T;
+          if (useHcp) { updates.p1Adj = adj1; updates.p2Adj = adj2; updates.handicapApplied = true; }
+          const prevWinner = match.winner;
+          if (adj1 < adj2) { updates.winner = match.player1; updates.margin = adj2-adj1; }
+          else if (adj2 < adj1) { updates.winner = match.player2; updates.margin = adj1-adj2; }
           else { updates.winner = "Tie"; updates.margin = 0; }
+          // If the winner flipped, force a fresh reveal cycle so the opponent
+          // sees the updated outcome.
+          if (prevWinner !== updates.winner) updates.resultsSeenBy = [];
         }
         await updateDoc(doc(db, "leagueMatches", match.id), updates);
+        // Standings might re-seed downstream playoffs; let progress checker
+        // see the new state. Safe no-op if league is already past its RR.
+        if (match.roundType === "regular") {
+          try { await checkLeagueProgress(match.leagueId); } catch (e) {}
+        }
       }
     }
 
@@ -1077,7 +1171,11 @@ export default function App(){
   const tId=pgaThisWeek?.start;const curTE=tId?tEntries.filter(e=>e.tournamentId===tId):[];
   const tJoined=[...new Set(curTE.map(e=>e.player))];const iMeJoined=tJoined.includes(me);
   const myTRnds=curTE.filter(e=>e.player===me&&e.round>0).sort((a,b)=>a.round-b.round);const myNextRd=myTRnds.length+1;
-  const tBoard=tJoined.map(p=>{const rnds=curTE.filter(e=>e.player===p&&e.round>0).sort((a,b)=>a.round-b.round);const tot=rnds.reduce((s,r)=>s+r.total,0);const par=rnds.reduce((s,r)=>s+r.par,0);const joinE=curTE.find(e=>e.player===p&&e.round===0);const hd=joinE?.hdcp||null;const adjTot=hd?rnds.reduce((s,r)=>s+(r.total-hd),0):null;const rScores={};rnds.forEach(r=>{rScores[r.round]={total:r.total,par:r.par};});return{player:p,rnds,tot,par,played:rnds.length,hd,adjTot,rScores};}).filter(p=>p.played>0).sort((a,b)=>tShowAdj&&a.adjTot!=null&&b.adjTot!=null?(a.adjTot-b.adjTot):((a.tot-a.par)-(b.tot-b.par)));
+  const tBoard=tJoined.map(p=>{const rnds=curTE.filter(e=>e.player===p&&e.round>0).sort((a,b)=>a.round-b.round);const tot=rnds.reduce((s,r)=>s+r.total,0);const par=rnds.reduce((s,r)=>s+r.par,0);const joinE=curTE.find(e=>e.player===p&&e.round===0);const hd=joinE?.hdcp||null;
+    // Adjusted total = total - hdcp once, not once per round. Previously
+    // subtracted hdcp on every round which over-applied the handicap.
+    const adjTot=hd?tot-hd:null;
+    const rScores={};rnds.forEach(r=>{rScores[r.round]={total:r.total,par:r.par};});return{player:p,rnds,tot,par,played:rnds.length,hd,adjTot,rScores};}).filter(p=>p.played>0).sort((a,b)=>tShowAdj&&a.adjTot!=null&&b.adjTot!=null?(a.adjTot-b.adjTot):((a.tot-a.par)-(b.tot-b.par)));
   const tPar=pgaThisWeek?pgaThisWeek.holes.reduce((s,h)=>s+h.par,0):72;
 
   const LiveBadge=()=>isLive?<div style={{background:"rgba(239,68,68,0.15)",border:"1px solid rgba(239,68,68,0.4)",borderRadius:8,padding:"6px 10px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:8,height:8,borderRadius:4,background:C.red,animation:"pulse 1.5s infinite"}}/><span style={{fontSize:12,fontWeight:700,color:C.red}}>LIVE</span><span style={{fontSize:12,color:C.text,fontWeight:700,letterSpacing:2}}>{liveData.code}</span></div><div style={{fontSize:10,color:C.muted}}>{liveData.players.length} player{liveData.players.length!==1?"s":""} · {liveScoreMode==="keeper"?"1 Scorekeeper":"Self-Score"}</div></div>:null;
