@@ -257,6 +257,31 @@ export default function LeagueTab({
           {isCreator && <button onClick={()=>{setShowManage(s=>!s);setManageNameDraft(curLeague.name);}} style={{...btnS(showManage),padding:"5px 10px",fontSize:11}}>{showManage?"Done":"⚙️ Manage"}</button>}
         </div>
       </div>
+      {/* Champion / season-complete celebration. Fires when league.status
+          flips to "complete" — either via the F match finishing or the
+          no-playoffs short-circuit at the end of regular season. */}
+      {curLeague.status === "complete" && (() => {
+        const finalMatch = poMatches.find(m => m.roundType === "F" && m.winner);
+        const champion = finalMatch?.winner || (dynStandings[0]?.player);
+        const finalLine = finalMatch
+          ? `${nick(finalMatch.player1)} ${finalMatch.p1Total ?? "—"}  vs  ${nick(finalMatch.player2)} ${finalMatch.p2Total ?? "—"}`
+          : `Top of standings · ${regMatches.length} matches played`;
+        if (!champion) return null;
+        return (
+          <div style={{background:"linear-gradient(135deg,#2a1a00,#1a0f00,#2a1a00)",borderRadius:16,padding:24,border:"2px solid #d4b84a",position:"relative",overflow:"hidden",textAlign:"center"}}>
+            <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,background:"radial-gradient(ellipse at 50% 30%, rgba(212,184,74,0.2) 0%, transparent 70%)",pointerEvents:"none"}}/>
+            <div style={{position:"relative",zIndex:1}}>
+              <div style={{fontSize:48}}>🏆</div>
+              <div style={{fontSize:11,color:"#d4b84a",textTransform:"uppercase",letterSpacing:4,marginTop:8}}>{curLeague.name} Champion</div>
+              <div style={{fontSize:32,fontWeight:900,color:"#fff",marginTop:8,textShadow:"0 0 30px rgba(212,184,74,0.5)"}}>{nick(champion)}</div>
+              <div style={{marginTop:12,fontSize:11,color:C.muted}}>{finalMatch?.course ? `${finalMatch.course} · ` : ""}{finalLine}</div>
+              {finalMatch?.winner && finalMatch.margin > 0 && <div style={{marginTop:6,fontSize:11,color:C.muted}}>Wins by {finalMatch.margin}{finalMatch.handicapApplied ? " (adjusted)" : ""}</div>}
+              {!finalMatch && <div style={{marginTop:6,fontSize:11,color:C.muted}}>Season ended without playoffs</div>}
+            </div>
+          </div>
+        );
+      })()}
+
       <div style={{display:"flex",gap:4}}>{[["standings","Standings"],["schedule","Schedule"],["bracket","Bracket"]].map(([k,l])=>(<button key={k} onClick={()=>setLeagueView(k)} style={{flex:1,padding:"8px 4px",borderRadius:8,border:leagueView===k?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:leagueView===k?C.accent:C.card,color:leagueView===k?C.white:C.muted,cursor:"pointer",fontSize:12,fontWeight:600}}>{l}</button>))}</div>
 
       {showManage && isCreator && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.gold}`,display:"flex",flexDirection:"column",gap:14}}>
