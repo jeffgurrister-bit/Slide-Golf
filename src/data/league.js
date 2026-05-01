@@ -77,6 +77,39 @@ export function buildPlayoffMatches(leagueId, totalRounds, sortedSeeds, fmt, opt
   return matches;
 }
 
+// Returns the next-round slot a completing playoff match's winner should
+// advance into, or null if there's nowhere to go. The geometry depends on
+// the league's effective playoff size:
+//   ps==2: just F, no advancement.
+//   ps==4: SF1→F.player1, SF2→F.player2.
+//   ps==6: QF1→SF1.player2 (seed 0 already in p1), QF2→SF2.player2 (seed 1 in p1).
+//   ps==7: QF1→SF1.player2 (seed 0 in p1), QF2→SF2.player1, QF3→SF2.player2.
+//   ps==8: QF1,2→SF1.player1/2; QF3,4→SF2.player1/2; SF1→F.p1, SF2→F.p2.
+export function nextPlayoffSlot(match, playoffSize) {
+  if (!match || match.roundType === "regular" || match.roundType === "F") return null;
+  const ps = playoffSize;
+  if (match.roundType === "SF") {
+    return { roundType: "F", matchNum: 1, slot: match.matchNum === 1 ? "player1" : "player2" };
+  }
+  if (match.roundType === "QF") {
+    if (ps === 8) {
+      const sfNum = match.matchNum <= 2 ? 1 : 2;
+      const slot = match.matchNum % 2 === 1 ? "player1" : "player2";
+      return { roundType: "SF", matchNum: sfNum, slot };
+    }
+    if (ps === 7) {
+      if (match.matchNum === 1) return { roundType: "SF", matchNum: 1, slot: "player2" };
+      if (match.matchNum === 2) return { roundType: "SF", matchNum: 2, slot: "player1" };
+      if (match.matchNum === 3) return { roundType: "SF", matchNum: 2, slot: "player2" };
+    }
+    if (ps === 6) {
+      if (match.matchNum === 1) return { roundType: "SF", matchNum: 1, slot: "player2" };
+      if (match.matchNum === 2) return { roundType: "SF", matchNum: 2, slot: "player2" };
+    }
+  }
+  return null;
+}
+
 // ─── ROUND ROBIN SCHEDULE GENERATOR ────────────────────
 // Standard circle method. Returns N-1 rounds (or N for odd N, with byes).
 // scheduleType "double" runs the schedule twice, so each pair plays each other

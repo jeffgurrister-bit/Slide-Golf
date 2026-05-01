@@ -18,6 +18,12 @@ export default function CoursesTab({
     try { return JSON.parse(localStorage.getItem(favKey(me)) || "[]"); } catch { return []; }
   });
   const [filter, setFilter] = useState("all"); // "all" | "favorites" | level
+  // useState initializer only runs on first mount; if `me` changes (player
+  // switch via the Switch button), we'd otherwise show User A's stars to
+  // User B. Reload from localStorage whenever me changes.
+  useEffect(() => {
+    try { setFavorites(JSON.parse(localStorage.getItem(favKey(me)) || "[]")); } catch { setFavorites([]); }
+  }, [me]);
   useEffect(() => {
     try { localStorage.setItem(favKey(me), JSON.stringify(favorites)); } catch {}
   }, [favorites, me]);
