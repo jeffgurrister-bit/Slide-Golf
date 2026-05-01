@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { C, btnS, inputS, smallInput } from "../utils/theme.js";
 import { calcPar, fmtRange, fmtR, computeCourseStats } from "../utils/helpers.jsx";
+
+// Favorites are stored per-player in localStorage. Cheap and private — no
+// schema change. Keyed by player name.
+const favKey = (me) => `sg-fav-courses-${me || "_anon"}`;
 
 export default function CoursesTab({
   allCourses, creating, setCreating, startRound, deleteCourseFromDB, handleGenerate,
@@ -10,6 +14,25 @@ export default function CoursesTab({
   courseRecords, rounds, leagueMatches, me
 }) {
   const [statsOpen, setStatsOpen] = useState({});
+  const [favorites, setFavorites] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(favKey(me)) || "[]"); } catch { return []; }
+  });
+  const [filter, setFilter] = useState("all"); // "all" | "favorites" | level
+  useEffect(() => {
+    try { localStorage.setItem(favKey(me), JSON.stringify(favorites)); } catch {}
+  }, [favorites, me]);
+  const toggleFav = (name) => setFavorites(f => f.includes(name) ? f.filter(x => x !== name) : [...f, name]);
+  const isFav = (name) => favorites.includes(name);
+  const filtered = (allCourses || []).filter(c => {
+    if (filter === "all") return true;
+    if (filter === "favorites") return isFav(c.name);
+    return c.level === filter;
+  }).sort((a, b) => {
+    // Favorites first within whatever filter is active.
+    const af = isFav(a.name) ? 0 : 1;
+    const bf = isFav(b.name) ? 0 : 1;
+    return af - bf;
+  });
   if (creating) return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{margin:0,fontSize:18}}>✏️ Create Course</h2><button onClick={()=>setCreating(false)} style={{...btnS(false),padding:"4px 10px",fontSize:11}}>Cancel</button></div>
@@ -24,7 +47,14 @@ export default function CoursesTab({
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}><h2 style={{margin:0,fontSize:18}}>Courses</h2><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button onClick={()=>{setCreating(true);resetCreator();}} style={{...btnS(true),padding:"5px 10px",fontSize:10}}>✏️ Create</button>{["Easy","Medium","Hard","Expert"].map(d=>(<button key={d} onClick={()=>handleGenerate(d)} style={{...btnS(false),padding:"5px 8px",fontSize:10,color:d==="Easy"?C.greenLt:d==="Medium"?C.gold:d==="Hard"?C.red:"#b48af8"}}>+{d}</button>))}</div></div>
-      {allCourses.map(c=>{const tp=c.holes.reduce((s,h)=>s+h.par,0);const rec=courseRecords?.[c.name];const open=statsOpen[c.name];const stats=open?computeCourseStats(c.name,rounds,leagueMatches,me):null;return<div key={c.id} style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{background:C.headerBg,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14,textTransform:"uppercase",letterSpacing:1}}>{c.name}</div>{c.tournament&&<div style={{fontSize:10,color:C.blue}}>{c.tournament}</div>}</div><span style={{background:c.level==="Hard"?"#6a2222":c.level==="Medium"?"#5a4a1a":c.level==="Expert"?"#4a2a6a":C.green,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600}}>{c.level}</span></div>
+      {/* Filter pills */}
+      <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+        {[["all","All"],["favorites","★ Favorites"],["Easy","Easy"],["Medium","Medium"],["Hard","Hard"],["Expert","Expert"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setFilter(v)} style={{padding:"4px 10px",borderRadius:6,border:filter===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:filter===v?C.accent:"transparent",color:filter===v?C.text:C.muted,cursor:"pointer",fontSize:10,fontWeight:filter===v?700:400}}>{l}</button>
+        ))}
+      </div>
+      {filtered.length===0 && <div style={{textAlign:"center",padding:30,color:C.muted,fontSize:12,background:C.card,borderRadius:12,border:`1px solid ${C.border}`}}>{filter==="favorites"?"No favorites yet — tap the ☆ on a course to add one":"No courses match this filter"}</div>}
+      {filtered.map(c=>{const tp=c.holes.reduce((s,h)=>s+h.par,0);const rec=courseRecords?.[c.name];const open=statsOpen[c.name];const stats=open?computeCourseStats(c.name,rounds,leagueMatches,me):null;const fav=isFav(c.name);return<div key={c.id} style={{background:C.card,borderRadius:12,border:`1px solid ${fav?C.gold:C.border}`,overflow:"hidden"}}><div style={{background:C.headerBg,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}><button onClick={(e)=>{e.stopPropagation();toggleFav(c.name);}} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,color:fav?C.gold:C.muted,padding:0,lineHeight:1}} title={fav?"Remove from favorites":"Add to favorites"}>{fav?"★":"☆"}</button><div style={{minWidth:0}}><div style={{fontWeight:700,fontSize:14,textTransform:"uppercase",letterSpacing:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>{c.tournament&&<div style={{fontSize:10,color:C.blue}}>{c.tournament}</div>}</div></div><span style={{background:c.level==="Hard"?"#6a2222":c.level==="Medium"?"#5a4a1a":c.level==="Expert"?"#4a2a6a":C.green,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>{c.level}</span></div>
         {rec && (
           <div style={{padding:"6px 14px",background:"rgba(212,184,74,0.06)",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
             <span style={{color:C.gold}}>🏆 Course Record</span>

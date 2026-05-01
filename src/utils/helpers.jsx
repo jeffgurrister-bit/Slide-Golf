@@ -155,8 +155,9 @@ export function computeCourseStats(courseName, rounds, leagueMatches, me) {
 
 // ─── ACHIEVEMENTS ───────────────────────────────────────
 export function computeAchievements(playerName, rounds, leagueMatches, allCourses, me) {
-  const myRounds18 = rounds.filter(r => r.player === playerName && roundHoleCount(r) === 18 && !isRoundSealed(r, leagueMatches, me));
-  const myRoundsAll = rounds.filter(r => r.player === playerName && !isRoundSealed(r, leagueMatches, me));
+  // Par-3 rounds tracked separately — exclude from aggregate achievements.
+  const myRounds18 = rounds.filter(r => r.player === playerName && roundHoleCount(r) === 18 && !r.par3 && !isRoundSealed(r, leagueMatches, me));
+  const myRoundsAll = rounds.filter(r => r.player === playerName && !r.par3 && !isRoundSealed(r, leagueMatches, me));
   const result = {};
 
   // Milestones
