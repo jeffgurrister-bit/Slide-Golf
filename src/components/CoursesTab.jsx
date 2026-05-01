@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
 import { C, btnS, inputS, smallInput } from "../utils/theme.js";
 import { calcPar, fmtRange, fmtR, computeCourseStats } from "../utils/helpers.jsx";
+import { FAMOUS_COURSES } from "../data/famousCourses.js";
 
 // Favorites are stored per-player in localStorage. Cheap and private — no
 // schema change. Keyed by player name.
 const favKey = (me) => `sg-fav-courses-${me || "_anon"}`;
 
 export default function CoursesTab({
-  allCourses, creating, setCreating, startRound, deleteCourseFromDB, handleGenerate,
+  allCourses, creating, setCreating, startRound, deleteCourseFromDB, handleGenerate, addFamousCourse,
   // Creator state
   ccName, setCcName, ccLevel, setCcLevel, ccTournament, setCcTournament,
   ccHoles, setCcHolePar, setCcHoleRange, ccNine, setCcNine, saveCreatedCourse, resetCreator,
@@ -18,6 +19,8 @@ export default function CoursesTab({
     try { return JSON.parse(localStorage.getItem(favKey(me)) || "[]"); } catch { return []; }
   });
   const [filter, setFilter] = useState("all"); // "all" | "favorites" | level
+  const [showFamous, setShowFamous] = useState(false);
+  const [famousSearch, setFamousSearch] = useState("");
   // useState initializer only runs on first mount; if `me` changes (player
   // switch via the Switch button), we'd otherwise show User A's stars to
   // User B. Reload from localStorage whenever me changes.
@@ -52,7 +55,56 @@ export default function CoursesTab({
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}><h2 style={{margin:0,fontSize:18}}>Courses</h2><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button onClick={()=>{setCreating(true);resetCreator();}} style={{...btnS(true),padding:"5px 10px",fontSize:10}}>✏️ Create</button>{["Easy","Medium","Hard","Expert"].map(d=>(<button key={d} onClick={()=>handleGenerate(d)} style={{...btnS(false),padding:"5px 8px",fontSize:10,color:d==="Easy"?C.greenLt:d==="Medium"?C.gold:d==="Hard"?C.red:"#b48af8"}}>+{d}</button>))}</div></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}><h2 style={{margin:0,fontSize:18}}>Courses</h2><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button onClick={()=>setShowFamous(true)} style={{padding:"5px 10px",borderRadius:6,border:`1px solid ${C.gold}`,background:"rgba(212,184,74,0.1)",color:C.gold,cursor:"pointer",fontSize:10,fontWeight:600}}>🌟 Famous</button><button onClick={()=>{setCreating(true);resetCreator();}} style={{...btnS(true),padding:"5px 10px",fontSize:10}}>✏️ Create</button>{["Easy","Medium","Hard","Expert"].map(d=>(<button key={d} onClick={()=>handleGenerate(d)} style={{...btnS(false),padding:"5px 8px",fontSize:10,color:d==="Easy"?C.greenLt:d==="Medium"?C.gold:d==="Hard"?C.red:"#b48af8"}}>+{d}</button>))}</div></div>
+
+      {showFamous && (() => {
+        const existingNames = new Set((allCourses || []).map(c => c.name));
+        const q = famousSearch.trim().toLowerCase();
+        const matches = FAMOUS_COURSES.filter(c => {
+          if (!q) return true;
+          return c.name.toLowerCase().includes(q) || (c.location || "").toLowerCase().includes(q);
+        });
+        return (
+          <div onClick={(e) => { if (e.target === e.currentTarget) { setShowFamous(false); setFamousSearch(""); } }} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",zIndex:9998,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 12px",overflowY:"auto"}}>
+            <div onClick={(e) => e.stopPropagation()} style={{background:C.bg,borderRadius:14,border:`1px solid ${C.gold}`,maxWidth:520,width:"100%",maxHeight:"calc(100vh - 80px)",display:"flex",flexDirection:"column"}}>
+              <div style={{padding:"12px 16px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:16,color:C.gold}}>🌟 Famous Courses</div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:2}}>{FAMOUS_COURSES.length} courses · tap to add to your list</div>
+                </div>
+                <button onClick={() => { setShowFamous(false); setFamousSearch(""); }} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:20,lineHeight:1}}>✕</button>
+              </div>
+              <div style={{padding:"10px 14px",borderBottom:`1px solid ${C.border}`}}>
+                <input value={famousSearch} onChange={(e) => setFamousSearch(e.target.value)} placeholder="Search by name or location…" style={{...inputS,width:"100%"}} autoFocus/>
+              </div>
+              <div style={{overflowY:"auto",flex:1}}>
+                {matches.length === 0 ? (
+                  <div style={{padding:"30px 20px",textAlign:"center",color:C.muted,fontSize:13}}>No courses match "{famousSearch}"</div>
+                ) : matches.map(c => {
+                  const inLib = existingNames.has(c.name);
+                  return (
+                    <div key={c.id} style={{padding:"10px 14px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:600,fontSize:13,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>
+                        {c.location && <div style={{fontSize:10,color:C.muted,marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.location}</div>}
+                      </div>
+                      <span style={{background:c.level==="Hard"?"#6a2222":c.level==="Medium"?"#5a4a1a":c.level==="Expert"?"#4a2a6a":C.green,padding:"2px 8px",borderRadius:4,fontSize:9,fontWeight:600,whiteSpace:"nowrap"}}>{c.level}</span>
+                      {inLib ? (
+                        <span style={{fontSize:10,color:C.greenLt,fontWeight:600,whiteSpace:"nowrap"}}>✓ Added</span>
+                      ) : (
+                        <button onClick={async () => { await addFamousCourse(c); }} style={{...btnS(true),padding:"5px 10px",fontSize:11,whiteSpace:"nowrap"}}>+ Add</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{padding:"8px 14px",borderTop:`1px solid ${C.border}`,fontSize:9,color:C.muted,textAlign:"center"}}>
+                Don't see your home course? Use ✏️ Create to add it manually.
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {/* Filter pills */}
       <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
         {[["all","All"],["favorites","★ Favorites"],["Easy","Easy"],["Medium","Medium"],["Hard","Hard"],["Expert","Expert"]].map(([v,l])=>(
