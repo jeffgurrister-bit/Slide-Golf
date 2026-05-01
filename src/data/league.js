@@ -147,7 +147,12 @@ export function computeStandings(players, matches) {
     const { player1: p1, player2: p2 } = m;
     if (!stats[p1] || !stats[p2]) return;
     stats[p1].gp++; stats[p2].gp++;
-    stats[p1].totalScore += (m.p1Total || 0); stats[p2].totalScore += (m.p2Total || 0);
+    // Use adjusted totals when handicap scoring was applied so the +/- diff
+    // column reflects the same number that decided the winner. Falls back
+    // to raw totals for non-handicap matches.
+    const p1T = m.handicapApplied && m.p1Adj != null ? m.p1Adj : (m.p1Total || 0);
+    const p2T = m.handicapApplied && m.p2Adj != null ? m.p2Adj : (m.p2Total || 0);
+    stats[p1].totalScore += p1T; stats[p2].totalScore += p2T;
     stats[p1].totalPar += (m.p1Par || 0); stats[p2].totalPar += (m.p2Par || 0);
     if (m.winner === p1) {
       stats[p1].pts += 2; stats[p1].w++; stats[p2].l++;

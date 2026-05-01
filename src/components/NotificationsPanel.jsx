@@ -38,7 +38,31 @@ function formatNotification(n) {
       return {
         emoji: "❌",
         title: `Match forfeited`,
-        subtitle: `${p.leagueName || "League"} — ${p.winner === "Tie" ? "ruled a tie" : `${p.winner} declared winner`}${p.manual ? " by creator" : " (deadline missed)"}`
+        subtitle: `${p.leagueName || "League"} — ${p.winner === "Tie" ? "ruled a tie" : p.winner ? `${p.winner} declared winner` : "double forfeit"}${p.manual ? " by creator" : " (deadline missed)"}`
+      };
+    case "deadline_extended":
+      return {
+        emoji: "⏰",
+        title: `Match deadline extended`,
+        subtitle: `${p.leagueName || "League"}${p.days ? ` — +${p.days} day${p.days !== 1 ? "s" : ""}` : ""}${p.newDeadline ? ` (now ${new Date(p.newDeadline).toLocaleDateString()})` : ""}`
+      };
+    case "league_invite":
+      return {
+        emoji: "📬",
+        title: p.replaces ? `You're filling in for ${p.replaces}` : `You've been added to a league`,
+        subtitle: p.leagueName || "League"
+      };
+    case "player_added":
+      return {
+        emoji: "👋",
+        title: `${p.newPlayer || "A new player"} joined`,
+        subtitle: `${p.leagueName || "League"} — catch-up matches added to the schedule`
+      };
+    case "player_removed":
+      return {
+        emoji: "👋",
+        title: `${p.removedPlayer || "A player"} left the league`,
+        subtitle: `${p.leagueName || "League"} — pending matches ${p.policy === "void" ? "voided" : "forfeited to opponents"}`
       };
     default:
       return { emoji: "🔔", title: "Notification", subtitle: n.type };
@@ -53,6 +77,10 @@ function notificationTarget(n) {
     case "playoffs_created":
     case "season_complete":
     case "match_forfeited":
+    case "deadline_extended":
+    case "league_invite":
+    case "player_added":
+    case "player_removed":
       return { tab: "league", openLeague: p.leagueId || null };
     case "results_unlocked":
       return { tab: "home" };

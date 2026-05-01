@@ -138,6 +138,18 @@ export default function App(){
             await Promise.all([m.player1,m.player2].filter(Boolean).map(p =>
               writeNotification(p, "match_forfeited", { matchId: m.id, leagueId: lg.id, leagueName: lg.name, winner: updates.winner, manual: false })
             ));
+            // Bracket advancement + season completion don't happen on their
+            // own when an auto-forfeit completes the last regular match or a
+            // playoff match — surface them here.
+            if(updates.winner&&updates.winner!=="Tie"&&(m.roundType==="QF"||m.roundType==="SF")){
+              const ps=effectivePlayoffSize(lg);
+              const slot=nextPlayoffSlot(m,ps);
+              if(slot){
+                const next=leagueMatches.find(x=>x.leagueId===lg.id&&x.roundType===slot.roundType&&x.matchNum===slot.matchNum);
+                if(next&&!next[slot.slot]){try{await updateDoc(doc(db,"leagueMatches",next.id),{[slot.slot]:updates.winner});}catch(e){}}
+              }
+            }
+            try{await checkLeagueProgress(lg.id);}catch(e){}
           }catch(e){/* best effort; another session may have raced ahead */}
         }
       }
@@ -443,6 +455,18 @@ export default function App(){
     await Promise.all([match.player1, match.player2].filter(Boolean).map(p =>
       writeNotification(p, "match_forfeited", { matchId, leagueId: match.leagueId, leagueName: lgName, winner: winnerName, manual: true })
     ));
+    // Advance the bracket if this was a playoff match, and let the progress
+    // checker run so a forfeit that completes the regular season or final
+    // doesn't leave the league stuck in "active"/"playoffs".
+    if (winnerName !== "Tie" && (match.roundType === "QF" || match.roundType === "SF")) {
+      const ps = effectivePlayoffSize(lg);
+      const slot = nextPlayoffSlot(match, ps);
+      if (slot) {
+        const next = leagueMatches.find(x => x.leagueId === match.leagueId && x.roundType === slot.roundType && x.matchNum === slot.matchNum);
+        if (next && !next[slot.slot]) { try { await updateDoc(doc(db, "leagueMatches", next.id), { [slot.slot]: winnerName }); } catch (e) {} }
+      }
+    }
+    try { await checkLeagueProgress(match.leagueId); } catch (e) {}
   }
   // Extend a specific match's deadline. Pass additionalDays to push the
   // existing deadline forward (or set it from now if none exists). Pass null
@@ -812,7 +836,10 @@ export default function App(){
             const resolveHcp=(player)=>{
               if(!useHcp||!player)return null;
               if((lg?.handicapSource||"manual")==="auto"){
-                const pr=rounds.filter(r=>r.player===player&&(r.holeCount||r.holesPlayed||18)===18);
+                // Match the league's hole count so a 9-hole league reads the
+                // player's 9-hole history, not their 18-hole history.
+                const lgHoles=lg?.holeCount===9?9:18;
+                const pr=rounds.filter(r=>r.player===player&&(r.holeCount||r.holesPlayed||18)===lgHoles);
                 return clamp(calcHandicap(pr));
               }
               return clamp(lg?.handicaps?.[player]);
@@ -929,17 +956,31 @@ export default function App(){
   // ─── CHECK LEAGUE PROGRESS (AUTO-ADVANCE) ────────────
   async function checkLeagueProgress(leagueId){
     const lg=leagues.find(l=>l.id===leagueId);
-    if(!lg||lg.status!=="active")return;
+    if(!lg||(lg.status!=="active"&&lg.status!=="playoffs"))return;
     const allMatches=leagueMatches.filter(m=>m.leagueId===leagueId);
+
+    // Case 1: in playoffs and the F match has a winner → complete the league.
+    if(lg.status==="playoffs"){
+      const finalMatch=allMatches.find(m=>m.roundType==="F");
+      if(finalMatch&&finalMatch.status==="complete"&&finalMatch.winner&&finalMatch.winner!=="Tie"){
+        await updateDoc(doc(db,"leagues",leagueId),{status:"complete"});
+        await Promise.all((lg.players||[]).map(p =>
+          writeNotification(p, "season_complete", { leagueId, leagueName: lg.name, champion: finalMatch.winner })
+        ));
+      }
+      return;
+    }
+
+    // Case 2: regular season just finished — build the bracket OR finish.
     const regMatches=allMatches.filter(m=>m.roundType==="regular");
-    const allDone=regMatches.every(m=>m.status==="complete");
+    const allDone=regMatches.length>0&&regMatches.every(m=>m.status==="complete");
     if(allDone&&!allMatches.some(m=>m.roundType!=="regular")){
       const stats={};
       lg.players.forEach(p=>{stats[p]={player:p,pts:0,diff:0};});
       regMatches.forEach(m=>{
         if(m.winner===m.player1){stats[m.player1].pts+=2;}
         else if(m.winner===m.player2){stats[m.player2].pts+=2;}
-        else{stats[m.player1].pts+=1;stats[m.player2].pts+=1;}
+        else if(m.winner==="Tie"){stats[m.player1].pts+=1;stats[m.player2].pts+=1;}
         stats[m.player1].diff+=(m.p1Total||0)-(m.p1Par||0);
         stats[m.player2].diff+=(m.p2Total||0)-(m.p2Par||0);
       });
@@ -949,9 +990,10 @@ export default function App(){
       const ps=effectivePlayoffSize(lg);
       // No playoffs: league completes immediately after the regular season.
       if(ps===0){
+        const champion=sorted[0]?.player||null;
         await updateDoc(doc(db,"leagues",leagueId),{status:"complete"});
         await Promise.all((lg.players||[]).map(p =>
-          writeNotification(p, "season_complete", { leagueId, leagueName: lg.name })
+          writeNotification(p, "season_complete", { leagueId, leagueName: lg.name, champion })
         ));
         return;
       }
@@ -1055,7 +1097,8 @@ export default function App(){
           const resolveHcp = (player) => {
             if (!useHcp || !player) return null;
             if ((lg?.handicapSource||"manual")==="auto") {
-              const pr = rounds.filter(r => r.player===player && (r.holeCount||r.holesPlayed||18)===18);
+              const lgHoles = lg?.holeCount === 9 ? 9 : 18;
+              const pr = rounds.filter(r => r.player===player && (r.holeCount||r.holesPlayed||18)===lgHoles);
               return clamp(calcHandicap(pr));
             }
             return clamp(lg?.handicaps?.[player]);
@@ -1218,7 +1261,9 @@ export default function App(){
     <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Segoe UI',system-ui,sans-serif",color:C.text}}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}} @keyframes hioGlow{0%{text-shadow:0 0 10px #ff6b00}50%{text-shadow:0 0 30px #ff6b00,0 0 60px #ff4400}100%{text-shadow:0 0 10px #ff6b00}} @keyframes champGlow{0%{box-shadow:0 0 20px rgba(212,184,74,0.3)}50%{box-shadow:0 0 40px rgba(212,184,74,0.6)}100%{box-shadow:0 0 20px rgba(212,184,74,0.3)}} @keyframes fadeIn{0%{opacity:0;transform:scale(0.95)}100%{opacity:1;transform:scale(1)}}`}</style>
       {/* HEADER */}
-      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{activeLeagueMatch?.isChampionship?"SEASON 1 FINALS":"LEAGUE TRACKER"}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}{me&&(()=>{const unread=notifications.filter(n=>!n.read).length;return <button onClick={()=>setShowNotifications(true)} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,position:"relative",padding:"2px 4px",lineHeight:1}}>🔔{unread>0&&<span style={{position:"absolute",top:-2,right:-4,background:C.red,color:"#fff",fontSize:9,fontWeight:700,minWidth:14,height:14,borderRadius:7,padding:"0 3px",display:"flex",alignItems:"center",justifyContent:"center"}}>{unread>9?"9+":unread}</span>}</button>;})()}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={()=>{setMe("");try{localStorage.removeItem("sg-me");}catch(e){}}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Switch</button></div></div>
+      {(()=>{const champLg=activeLeagueMatch?.leagueId?(activeLeagueMatch.leagueId==="s1"?{name:"Season 1"}:leagues.find(l=>l.id===activeLeagueMatch.leagueId)):null;const subtitle=activeLeagueMatch?.isChampionship?(champLg?.name?`${champLg.name.toUpperCase()} FINALS`:"CHAMPIONSHIP"):"LEAGUE TRACKER";return (
+      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{subtitle}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}{me&&(()=>{const unread=notifications.filter(n=>!n.read).length;return <button onClick={()=>setShowNotifications(true)} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,position:"relative",padding:"2px 4px",lineHeight:1}}>🔔{unread>0&&<span style={{position:"absolute",top:-2,right:-4,background:C.red,color:"#fff",fontSize:9,fontWeight:700,minWidth:14,height:14,borderRadius:7,padding:"0 3px",display:"flex",alignItems:"center",justifyContent:"center"}}>{unread>9?"9+":unread}</span>}</button>;})()}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={()=>{setMe("");try{localStorage.removeItem("sg-me");}catch(e){}}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Switch</button></div></div>
+      );})()}
       {/* TABS */}
       <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`}}>{[["home","Home"],["courses","Courses"],["play","Play"],["league","League"],["leaderboard","Board"],["stats","Stats"]].map(([k,l])=>(<button key={k} onClick={()=>{setTab(k);if(k==="courses")setCreating(false);if(k!=="home")setShowTourney(false);}} style={{flex:1,padding:"11px 4px",background:tab===k?C.accent:"transparent",color:tab===k?C.white:C.muted,border:"none",cursor:"pointer",fontSize:11,fontWeight:tab===k?700:400,borderBottom:tab===k?`2px solid ${C.greenLt}`:"2px solid transparent"}}>{l}</button>))}</div>
 
