@@ -7,7 +7,7 @@ export const S1_PLAYOFFS=[
   [33,4,7,"Lanfear Oaks","QF","Josh Baker",70,"Jon Basorka",79,"Jon Basorka",-1],
   [34,5,8,"Maitland Palms","SF","Ryan Hangartner",66,"Jeff Gurrister",64,"Jeff Gurrister",-2],
   [35,5,8,"Maitland Palms","SF","Jimmie Perkins",69,"Jon Basorka",81,"Jimmie Perkins",-12],
-  [36,6,9,"Nebraska","F","Jeff Gurrister",null,"Jimmie Perkins",null,null,null]
+  [36,6,9,"Nebraska","F","Jeff Gurrister",62,"Jimmie Perkins",67,"Jeff Gurrister",-5]
 ];
 
 // ─── LEAGUE FORMAT OPTIONS ──────────────────────────────
