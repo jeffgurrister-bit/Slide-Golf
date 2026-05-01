@@ -19,7 +19,11 @@ export const LEAGUE_FORMATS = {
   8: { name: "8-Player Tournament", playoffSize: 4, desc: "Full round-robin → Top 4 playoffs" },
   9: { name: "9-Player Series", playoffSize: 6, desc: "Round-robin → Top 6 playoffs (1-2 seeds bye)" },
   10: { name: "10-Player League", playoffSize: 7, desc: "Round-robin → Top 7 playoffs (#1 seed bye)" },
+  11: { name: "11-Player Series", playoffSize: 8, desc: "Round-robin → Top 8 playoffs" },
+  12: { name: "12-Player Tournament", playoffSize: 8, desc: "Round-robin → Top 8 playoffs" },
 };
+export const MIN_LEAGUE_PLAYERS = 4;
+export const MAX_LEAGUE_PLAYERS = 12;
 
 // ─── PLAYOFF BRACKET BUILDER ────────────────────────────
 // Returns an array of leagueMatches doc shapes (without createdAt) for the
@@ -36,7 +40,7 @@ export function buildPlayoffMatches(leagueId, totalRounds, sortedSeeds, fmt) {
     matches.push({ ...stub, round: totalRounds + 1, matchNum: 1, roundType: "SF", player1: seed(0), player2: seed(3) });
     matches.push({ ...stub, round: totalRounds + 1, matchNum: 2, roundType: "SF", player1: seed(1), player2: seed(2) });
     matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "F", player1: null, player2: null });
-  } else {
+  } else if (ps <= 7) {
     const qfPairs = ps >= 7
       ? [[seed(4), seed(3)], [seed(1), seed(6)], [seed(2), seed(5)]]
       : [[seed(2), seed(5)], [seed(3), seed(4)]];
@@ -44,27 +48,37 @@ export function buildPlayoffMatches(leagueId, totalRounds, sortedSeeds, fmt) {
     matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "SF", player1: seed(0), player2: null });
     matches.push({ ...stub, round: totalRounds + 2, matchNum: 2, roundType: "SF", player1: ps >= 7 ? null : seed(1), player2: null });
     matches.push({ ...stub, round: totalRounds + 3, matchNum: 1, roundType: "F", player1: null, player2: null });
+  } else {
+    // ps === 8: full QF→SF→F bracket, no byes (used for 11- and 12-player leagues)
+    const qfPairs = [[seed(0), seed(7)], [seed(3), seed(4)], [seed(1), seed(6)], [seed(2), seed(5)]];
+    qfPairs.forEach((pair, i) => matches.push({ ...stub, round: totalRounds + 1, matchNum: i + 1, roundType: "QF", player1: pair[0], player2: pair[1] }));
+    matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "SF", player1: null, player2: null });
+    matches.push({ ...stub, round: totalRounds + 2, matchNum: 2, roundType: "SF", player1: null, player2: null });
+    matches.push({ ...stub, round: totalRounds + 3, matchNum: 1, roundType: "F", player1: null, player2: null });
   }
   return matches;
 }
 
 // ─── ROUND ROBIN SCHEDULE GENERATOR ────────────────────
-export function generateRRSchedule(players) {
+// Standard circle method. Returns N-1 rounds (or N for odd N, with byes).
+// scheduleType "double" runs the schedule twice, so each pair plays each other
+// twice. "single" (default) is the classic round-robin.
+export function generateRRSchedule(players, scheduleType = "single") {
   const list = [...players];
   if (list.length % 2 !== 0) list.push("__BYE__");
   const total = list.length;
-  const rounds = [];
+  const single = [];
   for (let r = 0; r < total - 1; r++) {
     const rm = [];
     for (let i = 0; i < total / 2; i++) {
       const p1 = list[i], p2 = list[total - 1 - i];
       if (p1 !== "__BYE__" && p2 !== "__BYE__") rm.push([p1, p2]);
     }
-    rounds.push(rm);
+    single.push(rm);
     const last = list.pop();
     list.splice(1, 0, last);
   }
-  return rounds;
+  return scheduleType === "double" ? [...single, ...single] : single;
 }
 
 // ─── COMPUTE STANDINGS ─────────────────────────────────

@@ -13,7 +13,7 @@ import { PGA_2026, getPGACourse } from "./data/pga2026.js";
 import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, RelPar, genLiveCode, isRoundSealed, computeCourseRecords, computeAchievements, isLeagueRound, isRoundHiddenForDisplay, championshipFingerprints, roundHoleCount } from "./utils/helpers.jsx";
 import { generateCourse } from "./utils/generate.js";
 import { C, btnS, inputS, smallInput } from "./utils/theme.js";
-import { generateRRSchedule, LEAGUE_FORMATS, buildPlayoffMatches } from "./data/league.js";
+import { generateRRSchedule, LEAGUE_FORMATS, buildPlayoffMatches, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS } from "./data/league.js";
 
 // ─── COMPONENT IMPORTS ──────────────────────────────────
 import HomeTab from "./components/HomeTab.jsx";
@@ -191,14 +191,24 @@ export default function App(){
   function playCasualPGA(pga){setActiveTourney(null);const course={name:pga.name,level:pga.level,holes:pga.holes,pga:true,tournament:pga.tournament};setSelCourse(course);setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setTab("play");}
 
   // ─── LEAGUE FUNCTIONS ─────────────────────────────────
-  async function createLeague(name, useHandicap) {
+  async function createLeague(name, opts = {}) {
     const code = genLiveCode() + genLiveCode().slice(0,2);
     const ref = await addDoc(collection(db,"leagues"), {
       name, code: code.toUpperCase(), creator: me, status: "lobby",
-      players: [me], useHdcp: useHandicap || false,
+      players: [me],
+      // New configurable options. Defaults match the prior behavior so any
+      // legacy lobby continues to work unchanged.
+      holeCount: opts.holeCount === 9 ? 9 : 18,
+      scheduleType: opts.scheduleType === "double" ? "double" : "single",
+      courseRotation: opts.courseRotation || "free", // "free" | "scheduled"
+      coursePool: opts.coursePool || null, // null = all courses allowed
+      coursesByRound: null, // populated in lobby when rotation === "scheduled"
       createdAt: Date.now()
     });
     setSelectedLeague(ref.id);
+  }
+  async function updateLeagueConfig(leagueId, patch) {
+    await updateDoc(doc(db, "leagues", leagueId), patch);
   }
 
   async function joinLeagueByCode(code) {
@@ -218,22 +228,33 @@ export default function App(){
     if (!lg || lg.creator !== me) return;
     const n = lg.players.length;
     const fmt = LEAGUE_FORMATS[n];
-    if (!fmt) { alert("Need 4-10 players to start"); return; }
-    const schedule = generateRRSchedule(lg.players);
+    if (!fmt) { alert(`Need ${MIN_LEAGUE_PLAYERS}-${MAX_LEAGUE_PLAYERS} players to start`); return; }
+    const scheduleType = lg.scheduleType || "single";
+    const schedule = generateRRSchedule(lg.players, scheduleType);
+    // If course-of-the-week is configured, pull the round→course map so we
+    // can pre-fill match.course at write time.
+    const coursesByRound = lg.courseRotation === "scheduled" ? (lg.coursesByRound || []) : null;
+    if (coursesByRound) {
+      const missing = schedule.findIndex((_, i) => !coursesByRound[i]);
+      if (missing !== -1) { alert(`Pick a course for week ${missing + 1} before starting.`); return; }
+    }
     let matchNum = 0;
+    const writes = [];
     for (let rIdx = 0; rIdx < schedule.length; rIdx++) {
+      const weekCourse = coursesByRound ? coursesByRound[rIdx] : null;
       for (const [p1, p2] of schedule[rIdx]) {
         matchNum++;
-        await addDoc(collection(db,"leagueMatches"), {
+        writes.push(addDoc(collection(db,"leagueMatches"), {
           leagueId, round: rIdx + 1, matchNum, roundType: "regular",
           player1: p1, player2: p2,
-          course: null, p1Total: null, p2Total: null, p1Par: null, p2Par: null,
+          course: weekCourse, p1Total: null, p2Total: null, p1Par: null, p2Par: null,
           p1Scores: null, p2Scores: null,
           winner: null, margin: null, status: "pending",
           createdAt: Date.now()
-        });
+        }));
       }
     }
+    await Promise.all(writes);
     await updateDoc(doc(db,"leagues",leagueId), {
       status: "active", totalRounds: schedule.length, currentRound: 1,
       playoffSize: fmt.playoffSize, formatName: fmt.name
@@ -252,15 +273,19 @@ export default function App(){
     }
     const match = leagueMatches.find(m => m.id === matchIdOrSpecial);
     if (!match) return;
-    const isP1 = match.player1 === me;
     let course = null;
     if (match.course) {
       course = allCourses.find(c => c.name === match.course);
       if (!course) { alert("Course not found: " + match.course); return; }
     }
-    setActiveLeagueMatch({ matchId: match.id, leagueId: match.leagueId, isChampionship: match.roundType === "F", roundType: match.roundType });
+    // Honor league-level config (hole count, course-of-the-week).
+    const lg = leagues.find(l => l.id === match.leagueId);
+    const lgHoleCount = lg?.holeCount === 9 ? 9 : 18;
+    setActiveLeagueMatch({ matchId: match.id, leagueId: match.leagueId, isChampionship: match.roundType === "F", roundType: match.roundType, lockCourse: !!match.course });
     if (course) setSelCourse(course); else setSelCourse(null);
-    setRoundPlayers([me]);setAllScores({[me]: Array(18).fill(null)});setAllShotLogs({[me]: Array.from({length:18},()=>[])});
+    setRoundPlayers([me]);
+    setAllScores({[me]: Array(18).fill(null)});setAllShotLogs({[me]: Array.from({length:18},()=>[])});
+    setHoleCount(lgHoleCount); setNineType("front");
     setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(true);setActiveTourney(null);setTab("play");
   }
 
@@ -677,7 +702,7 @@ export default function App(){
 
       <div style={{maxWidth:600,margin:"0 auto",padding:16}}>
         {tab==="home"&&<HomeTab me={me} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults} openRoundDetail={openRoundDetail}/>}
-        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile}/>}
+        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} updateLeagueConfig={updateLeagueConfig} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile}/>}
         {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords} rounds={rounds} leagueMatches={leagueMatches} me={me}/>}
         {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell} holeCount={holeCount} setHoleCount={setHoleCount} nineType={nineType} setNineType={setNineType} activeLeagueMatch={activeLeagueMatch}/></>}
         {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}

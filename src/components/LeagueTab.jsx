@@ -1,18 +1,22 @@
 import { useState } from "react";
-import { S1_STANDINGS, S1_RESULTS, S1_PLAYOFFS, LEAGUE_FORMATS, computeStandings } from "../data/league.js";
+import { S1_STANDINGS, S1_RESULTS, S1_PLAYOFFS, LEAGUE_FORMATS, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS, computeStandings, generateRRSchedule } from "../data/league.js";
 import { C, btnS, inputS } from "../utils/theme.js";
 import { effectiveMatchType, championshipFingerprints } from "../utils/helpers.jsx";
 
 export default function LeagueTab({
   me, leagueView, setLeagueView, leagueRdFilter, setLeagueRdFilter,
   leagues, leagueMatches, rounds, allCourses,
-  createLeague, joinLeagueByCode, startLeagueSeason, playLeagueMatch,
+  createLeague, updateLeagueConfig, joinLeagueByCode, startLeagueSeason, playLeagueMatch,
   selectedLeague, setSelectedLeague,
   openPlayerProfile
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoinCode, setShowJoinCode] = useState(false);
   const [newName, setNewName] = useState("");
+  // Configurable league options collected at create time.
+  const [newHoleCount, setNewHoleCount] = useState(18);
+  const [newScheduleType, setNewScheduleType] = useState("single");
+  const [newCourseRotation, setNewCourseRotation] = useState("free");
   const [joinCode, setJoinCode] = useState("");
   const champFps = championshipFingerprints(leagueMatches);
 
@@ -122,15 +126,64 @@ export default function LeagueTab({
   };
 
   // ─── DYNAMIC LEAGUE: LOBBY ────────────────────────────
-  const Lobby = () => (
-    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+  const Lobby = () => {
+    const playerCount = curLeague.players?.length || 0;
+    const fmt = LEAGUE_FORMATS[playerCount];
+    const isCreator = curLeague.creator === me;
+    const scheduleType = curLeague.scheduleType || "single";
+    const courseRotation = curLeague.courseRotation || "free";
+    const holeCount = curLeague.holeCount === 9 ? 9 : 18;
+    // Preview the schedule once we have enough players. The schedule depends
+    // on player order, so it's only meaningful when we know the final lineup.
+    const schedulePreview = fmt ? generateRRSchedule(curLeague.players, scheduleType) : null;
+    const totalWeeks = schedulePreview?.length || 0;
+    const coursesByRound = curLeague.coursesByRound || [];
+    const setRoundCourse = async (idx, courseName) => {
+      const next = [...coursesByRound];
+      next[idx] = courseName || null;
+      await updateLeagueConfig(curLeague.id, { coursesByRound: next });
+    };
+    const allCoursesAssigned = courseRotation !== "scheduled" || (totalWeeks > 0 && schedulePreview.every((_, i) => coursesByRound[i]));
+
+    return (<div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{margin:0,fontSize:18}}>⚡ {curLeague.name}</h2><span style={{background:"rgba(138,180,248,0.2)",color:C.blue,padding:"3px 10px",borderRadius:12,fontSize:11,fontWeight:600}}>Lobby</span></div>
+
       <div style={{background:"linear-gradient(135deg,#1a2a1a,#2a3a2a)",borderRadius:12,padding:20,border:`2px solid ${C.greenLt}`,textAlign:"center"}}><div style={{fontSize:11,color:C.greenLt,textTransform:"uppercase",letterSpacing:3}}>Invite Code</div><div style={{fontSize:40,fontWeight:900,letterSpacing:8,color:C.white,marginTop:8}}>{curLeague.code}</div><div style={{fontSize:12,color:C.muted,marginTop:8}}>Share this code with friends</div></div>
-      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:10}}>Players ({curLeague.players?.length||0})</div>{(curLeague.players||[]).map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card2,borderRadius:8,padding:"8px 12px",marginBottom:4}}><span style={{fontWeight:600,color:p===me?C.greenLt:C.text}}>{p}{p===me?" (you)":""}</span>{p===curLeague.creator&&<span style={{fontSize:10,color:C.gold}}>👑</span>}</div>))}</div>
-      {curLeague.creator===me&&(curLeague.players?.length||0)>=4&&LEAGUE_FORMATS[curLeague.players.length]&&<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:8}}>Ready to Start?</div><div style={{background:C.card2,borderRadius:8,padding:10,marginBottom:10}}><div style={{fontWeight:600,fontSize:13}}>{LEAGUE_FORMATS[curLeague.players.length].name}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{LEAGUE_FORMATS[curLeague.players.length].desc}</div></div><button onClick={()=>startLeagueSeason(curLeague.id)} style={{...btnS(true),width:"100%",padding:14,fontSize:15}}>🏆 Start Season</button></div>}
-      {curLeague.creator!==me&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:12}}>Waiting for {curLeague.creator} to start...</div>}
-    </div>
-  );
+
+      {/* Configuration summary */}
+      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+        <div style={{fontWeight:700,marginBottom:8,fontSize:13}}>League Settings</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:11}}>
+          <div><span style={{color:C.muted}}>Match length: </span><span style={{fontWeight:600}}>{holeCount} holes</span></div>
+          <div><span style={{color:C.muted}}>Schedule: </span><span style={{fontWeight:600}}>{scheduleType==="double"?"Double round-robin":"Single round-robin"}</span></div>
+          <div><span style={{color:C.muted}}>Courses: </span><span style={{fontWeight:600}}>{courseRotation==="scheduled"?"Course-of-the-week":"Free choice"}</span></div>
+          {fmt && <div><span style={{color:C.muted}}>Weeks: </span><span style={{fontWeight:600}}>{totalWeeks}</span></div>}
+        </div>
+      </div>
+
+      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:10}}>Players ({playerCount}{fmt?` · ${fmt.name}`:""})</div>{(curLeague.players||[]).map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card2,borderRadius:8,padding:"8px 12px",marginBottom:4}}><span style={{fontWeight:600,color:p===me?C.greenLt:C.text}}>{p}{p===me?" (you)":""}</span>{p===curLeague.creator&&<span style={{fontSize:10,color:C.gold}}>👑</span>}</div>))}{!fmt&&playerCount>0&&<div style={{fontSize:10,color:C.muted,marginTop:6,textAlign:"center"}}>Need {MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players to start</div>}</div>
+
+      {/* Course-of-the-week picker (creator only, when scheduled) */}
+      {isCreator && fmt && courseRotation === "scheduled" && schedulePreview && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+        <div style={{fontWeight:700,marginBottom:8,fontSize:13}}>Pick a Course for Each Week</div>
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {schedulePreview.map((wk, i) => (
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.muted,minWidth:60}}>Week {i + 1}</div>
+              <select value={coursesByRound[i] || ""} onChange={e => setRoundCourse(i, e.target.value)} style={{flex:1,padding:"6px 10px",borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:12}}>
+                <option value="">— Pick a course —</option>
+                {(allCourses || []).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+              </select>
+              <span style={{fontSize:9,color:C.muted,minWidth:50,textAlign:"right"}}>{wk.length} match{wk.length !== 1 ? "es" : ""}</span>
+            </div>
+          ))}
+        </div>
+      </div>}
+
+      {isCreator && fmt && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:8}}>Ready to Start?</div><div style={{background:C.card2,borderRadius:8,padding:10,marginBottom:10}}><div style={{fontWeight:600,fontSize:13}}>{fmt.name}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{fmt.desc}</div><div style={{fontSize:10,color:C.muted,marginTop:4}}>{totalWeeks} week{totalWeeks !== 1 ? "s" : ""} · {schedulePreview?.reduce((s, w) => s + w.length, 0) || 0} regular-season matches</div></div><button onClick={()=>startLeagueSeason(curLeague.id)} disabled={!allCoursesAssigned} style={{...btnS(allCoursesAssigned),width:"100%",padding:14,fontSize:15,opacity:allCoursesAssigned?1:0.5,cursor:allCoursesAssigned?"pointer":"not-allowed"}}>🏆 Start Season</button>{!allCoursesAssigned && <div style={{fontSize:10,color:C.gold,marginTop:6,textAlign:"center"}}>Pick a course for every week first</div>}</div>}
+      {!isCreator&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:12}}>Waiting for {curLeague.creator} to start...</div>}
+    </div>);
+  };
 
   // ─── DYNAMIC LEAGUE: ACTIVE ───────────────────────────
   const Active = () => {
@@ -179,8 +232,38 @@ export default function LeagueTab({
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontWeight:700,fontSize:15}}>Create New League</div><button onClick={()=>setShowCreate(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:16}}>✕</button></div>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         <div><div style={{fontSize:11,color:C.muted,marginBottom:4}}>League Name</div><input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Season 2" style={inputS}/></div>
-        <button onClick={async()=>{if(!newName.trim())return;await createLeague(newName.trim(),false);setNewName("");setShowCreate(false);}} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
-        <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>You'll get an invite code to share</div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Match Length</div>
+          <div style={{display:"flex",gap:6}}>
+            {[[18,"18 holes"],[9,"9 holes"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setNewHoleCount(v)} style={{flex:1,padding:"8px 6px",borderRadius:6,border:newHoleCount===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newHoleCount===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:12,fontWeight:newHoleCount===v?700:400}}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Schedule Type</div>
+          <div style={{display:"flex",gap:6}}>
+            {[["single","Single round-robin"],["double","Double round-robin"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setNewScheduleType(v)} style={{flex:1,padding:"8px 6px",borderRadius:6,border:newScheduleType===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newScheduleType===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:11,fontWeight:newScheduleType===v?700:400}}>{l}</button>
+            ))}
+          </div>
+          <div style={{fontSize:9,color:C.muted,marginTop:4}}>{newScheduleType==="double"?"Each pair plays twice — twice as many weeks":"Each pair plays once"}</div>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Course Rotation</div>
+          <div style={{display:"flex",gap:6}}>
+            {[["free","Free choice"],["scheduled","Course-of-the-week"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setNewCourseRotation(v)} style={{flex:1,padding:"8px 6px",borderRadius:6,border:newCourseRotation===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newCourseRotation===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:11,fontWeight:newCourseRotation===v?700:400}}>{l}</button>
+            ))}
+          </div>
+          <div style={{fontSize:9,color:C.muted,marginTop:4}}>{newCourseRotation==="scheduled"?"You'll pick a course per week in the lobby":"First player to tee off picks the course"}</div>
+        </div>
+        <button onClick={async()=>{
+          if(!newName.trim())return;
+          await createLeague(newName.trim(),{holeCount:newHoleCount,scheduleType:newScheduleType,courseRotation:newCourseRotation});
+          setNewName("");setNewHoleCount(18);setNewScheduleType("single");setNewCourseRotation("free");setShowCreate(false);
+        }} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
+        <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>{MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players · You'll get an invite code to share</div>
       </div>
     </div>}
     {showJoinCode&&<div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.blue}`,marginBottom:10}}>
