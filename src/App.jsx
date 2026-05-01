@@ -10,7 +10,7 @@ import { COURSES } from "./data/courses.js";
 import { PGA_2026, getPGACourse } from "./data/pga2026.js";
 
 // ─── UTILITY IMPORTS ────────────────────────────────────
-import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, scoreName, RelPar, genLiveCode, calcNeed, isRoundSealed, computeCourseRecords, computeAchievements, isLeagueRound } from "./utils/helpers.jsx";
+import { calcPar, fmtRange, fmtR, calcHandicap, countHIO, scoreName, RelPar, genLiveCode, calcNeed, isRoundSealed, computeCourseRecords, computeAchievements, isLeagueRound, isRoundHiddenForDisplay } from "./utils/helpers.jsx";
 import { generateCourse } from "./utils/generate.js";
 import { C, btnS, inputS, smallInput } from "./utils/theme.js";
 import { generateRRSchedule, LEAGUE_FORMATS } from "./data/league.js";
@@ -342,7 +342,7 @@ export default function App(){
           holesPlayed:holeCount, holeCount:holeCount,
           nineType:holeCount===9?nineType:null,
           diff:total-totalPar, holeInOnes:hio,
-          hidden:hideScores, hdcp:hd, adjTotal:hd?total-hd:null,
+          hidden:hideScores, autoHidden:hideScores&&!!activeLeagueMatch, hdcp:hd, adjTotal:hd?total-hd:null,
           sealedMatchId:activeLeagueMatch&&activeLeagueMatch.matchId!=="s1-final"?activeLeagueMatch.matchId:null,
           matchType: matchType,
           shotLogs: hasShots ? shotLogsMap : null,
@@ -663,7 +663,7 @@ export default function App(){
               </div>
               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                 {!editingRound && detailRound.player === me && <button onClick={()=>{setEditingRound(true);setEditScores([...(detailRound.scores||Array(18).fill(null))]);}} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>✏️ Edit</button>}
-                {!editingRound && (detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !detailRound.hidden)) && <button onClick={()=>setShareOverlay(true)} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>📤 Share</button>}
+                {!editingRound && (detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !isRoundHiddenForDisplay(detailRound,leagueMatches,rounds,me))) && <button onClick={()=>setShareOverlay(true)} style={{...btnS(false),padding:"6px 12px",fontSize:11}}>📤 Share</button>}
                 <button onClick={closeRoundDetail} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:20,lineHeight:1}}>✕</button>
               </div>
             </div>
@@ -672,7 +672,7 @@ export default function App(){
             {(()=>{
               const isMyRound = detailRound.player === me;
               const sealed = isRoundSealed(detailRound, leagueMatches, me);
-              const hiddenFromMe = !isMyRound && (sealed || detailRound.hidden);
+              const hiddenFromMe = !isMyRound && (sealed || isRoundHiddenForDisplay(detailRound, leagueMatches, rounds, me));
               if (hiddenFromMe) return <div style={{padding:"40px 20px",textAlign:"center"}}>
                 <div style={{fontSize:40,marginBottom:12}}>{sealed?"🔒":"🙈"}</div>
                 <div style={{fontWeight:700,fontSize:16,marginBottom:6}}>{sealed?"Scores Sealed":"Scores Hidden"}</div>
@@ -682,7 +682,7 @@ export default function App(){
             })()}
 
             {/* Scorecard — only show if not hidden from viewer */}
-            {(detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !detailRound.hidden)) && <>
+            {(detailRound.player===me || (!isRoundSealed(detailRound,leagueMatches,me) && !isRoundHiddenForDisplay(detailRound,leagueMatches,rounds,me))) && <>
             <div style={{padding:"12px 10px",overflowX:"auto"}}>
               {(()=>{
                 const hc = detailRound.holeCount || detailRound.holesPlayed || 18;
