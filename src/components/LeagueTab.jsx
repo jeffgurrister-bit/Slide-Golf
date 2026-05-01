@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { S1_STANDINGS, S1_RESULTS, S1_PLAYOFFS, LEAGUE_FORMATS, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS, computeStandings, generateRRSchedule } from "../data/league.js";
+import { S1_STANDINGS, S1_RESULTS, S1_PLAYOFFS, LEAGUE_FORMATS, MIN_LEAGUE_PLAYERS, MAX_LEAGUE_PLAYERS, PLAYOFF_SIZE_OPTIONS, effectivePlayoffSize, computeStandings, generateRRSchedule } from "../data/league.js";
 import { C, btnS, inputS } from "../utils/theme.js";
 import { effectiveMatchType, championshipFingerprints } from "../utils/helpers.jsx";
 
@@ -18,11 +18,24 @@ export default function LeagueTab({
   const [newHoleCount, setNewHoleCount] = useState(18);
   const [newScheduleType, setNewScheduleType] = useState("single");
   const [newCourseRotation, setNewCourseRotation] = useState("free");
+  const [newPlayoffSize, setNewPlayoffSize] = useState("auto"); // "auto" | "0" | "2" | "4" | "8"
+  const [newUseHcpScoring, setNewUseHcpScoring] = useState(false);
+  const [newHcpSource, setNewHcpSource] = useState("manual"); // "manual" | "auto"
+  const [newHcpCap, setNewHcpCap] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [showManage, setShowManage] = useState(false);
+  const [showSchedulePreview, setShowSchedulePreview] = useState(false);
   const [manageNameDraft, setManageNameDraft] = useState("");
   const [forfeitTarget, setForfeitTarget] = useState(null); // matchId
   const [hcpDrafts, setHcpDrafts] = useState({}); // { player: stringValue }
+  const [nickDrafts, setNickDrafts] = useState({}); // { player: stringValue }
+  // Nickname helper: if a league has a nickname for a player, show "Nick (Real)"
+  // when expanded, or just nickname when compact.
+  const nick = (player) => {
+    if (!curLeague || !curLeague.nicknames) return player;
+    const n = curLeague.nicknames[player];
+    return n ? n : player;
+  };
   const champFps = championshipFingerprints(leagueMatches);
 
   const myLeagues = (leagues || []).filter(lg => lg.players?.includes(me));
@@ -166,7 +179,7 @@ export default function LeagueTab({
         </div>
       </div>
 
-      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:10}}>Players ({playerCount}{fmt?` · ${fmt.name}`:""})</div>{(curLeague.players||[]).map(p=>(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card2,borderRadius:8,padding:"8px 12px",marginBottom:4}}><span style={{fontWeight:600,color:p===me?C.greenLt:C.text}}>{p}{p===me?" (you)":""}</span>{p===curLeague.creator&&<span style={{fontSize:10,color:C.gold}}>👑</span>}</div>))}{!fmt&&playerCount>0&&<div style={{fontSize:10,color:C.muted,marginTop:6,textAlign:"center"}}>Need {MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players to start</div>}</div>
+      <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:10}}>Players ({playerCount}{fmt?` · ${fmt.name}`:""})</div>{(curLeague.players||[]).map(p=>{const nm=nick(p);return(<div key={p} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card2,borderRadius:8,padding:"8px 12px",marginBottom:4}}><span style={{fontWeight:600,color:p===me?C.greenLt:C.text}}>{nm}{nm!==p&&<span style={{fontSize:10,color:C.muted,fontWeight:400,marginLeft:4}}>({p})</span>}{p===me?" (you)":""}</span>{p===curLeague.creator&&<span style={{fontSize:10,color:C.gold}}>👑</span>}</div>);})}{!fmt&&playerCount>0&&<div style={{fontSize:10,color:C.muted,marginTop:6,textAlign:"center"}}>Need {MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players to start</div>}</div>
 
       {/* Course-of-the-week picker (creator only, when scheduled) */}
       {isCreator && fmt && courseRotation === "scheduled" && schedulePreview && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
@@ -183,6 +196,34 @@ export default function LeagueTab({
             </div>
           ))}
         </div>
+      </div>}
+
+      {/* Championship course pre-pick (creator only, if there'll be a final) */}
+      {isCreator && fmt && (curLeague.playoffSizeOverride !== 0) && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+        <div style={{fontWeight:700,marginBottom:6,fontSize:13}}>🏆 Championship Course</div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <select value={curLeague.championshipCourse || ""} onChange={e => updateLeagueConfig(curLeague.id, { championshipCourse: e.target.value || null })} style={{flex:1,padding:"6px 10px",borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:12}}>
+            <option value="">— Decide later —</option>
+            {(allCourses || []).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+          </select>
+        </div>
+        <div style={{fontSize:9,color:C.muted,marginTop:4}}>The Final match will be played on this course. Optional.</div>
+      </div>}
+
+      {/* Schedule preview */}
+      {isCreator && fmt && schedulePreview && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setShowSchedulePreview(s=>!s)}>
+          <div style={{fontWeight:700,fontSize:13}}>📅 Schedule Preview</div>
+          <span style={{fontSize:11,color:C.muted}}>{showSchedulePreview ? "▾" : "▸"}</span>
+        </div>
+        {showSchedulePreview && <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:6}}>
+          {schedulePreview.map((wk, i) => (
+            <div key={i} style={{background:C.card2,borderRadius:6,padding:"6px 10px",fontSize:11}}>
+              <div style={{fontWeight:600,color:C.muted,marginBottom:3}}>Week {i + 1}{coursesByRound[i] ? ` · ${coursesByRound[i]}` : ""}</div>
+              {wk.map((pair, j) => <div key={j} style={{paddingLeft:8}}>{pair[0]} vs {pair[1]}</div>)}
+            </div>
+          ))}
+        </div>}
       </div>}
 
       {isCreator && fmt && <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:700,marginBottom:8}}>Ready to Start?</div><div style={{background:C.card2,borderRadius:8,padding:10,marginBottom:10}}><div style={{fontWeight:600,fontSize:13}}>{fmt.name}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{fmt.desc}</div><div style={{fontSize:10,color:C.muted,marginTop:4}}>{totalWeeks} week{totalWeeks !== 1 ? "s" : ""} · {schedulePreview?.reduce((s, w) => s + w.length, 0) || 0} regular-season matches</div></div><button onClick={()=>startLeagueSeason(curLeague.id)} disabled={!allCoursesAssigned} style={{...btnS(allCoursesAssigned),width:"100%",padding:14,fontSize:15,opacity:allCoursesAssigned?1:0.5,cursor:allCoursesAssigned?"pointer":"not-allowed"}}>🏆 Start Season</button>{!allCoursesAssigned && <div style={{fontSize:10,color:C.gold,marginTop:6,textAlign:"center"}}>Pick a course for every week first</div>}</div>}
@@ -254,7 +295,7 @@ export default function LeagueTab({
             {curMatches.filter(m => m.status !== "complete" && m.player1 && m.player2).sort((a,b) => a.round - b.round || a.matchNum - b.matchNum).map(m => (
               <div key={m.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.player1} vs {m.player2}</div>
+                  <div style={{fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{nick(m.player1)} vs {nick(m.player2)}</div>
                   <div style={{fontSize:9,color:C.muted}}>Wk {m.round} · {m.roundType==="regular"?"Reg":m.roundType}</div>
                 </div>
                 <select value={m.course || ""} onChange={e => setMatchCourse(m.id, e.target.value)} style={{padding:"4px 6px",borderRadius:4,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:11,maxWidth:140}}>
@@ -274,8 +315,8 @@ export default function LeagueTab({
             {curMatches.sort((a,b) => a.round - b.round || a.matchNum - b.matchNum).map(m => (
               <div key={m.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,background:C.card2,borderRadius:6,padding:"6px 8px"}}>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.player1||"TBD"} vs {m.player2||"TBD"}</div>
-                  <div style={{fontSize:9,color:C.muted}}>Wk {m.round} · {m.roundType==="regular"?"Reg":m.roundType} · {m.status==="complete"?<span style={{color:C.greenLt}}>{m.winner==="Tie"?"Tie":`${m.winner} won`}{m.forfeit?" (forfeit)":""}</span>:<span>pending</span>}</div>
+                  <div style={{fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.player1?nick(m.player1):"TBD"} vs {m.player2?nick(m.player2):"TBD"}</div>
+                  <div style={{fontSize:9,color:C.muted}}>Wk {m.round} · {m.roundType==="regular"?"Reg":m.roundType} · {m.status==="complete"?<span style={{color:C.greenLt}}>{m.winner==="Tie"?"Tie":`${nick(m.winner)} won`}{m.forfeit?" (forfeit)":""}</span>:<span>pending</span>}</div>
                 </div>
                 {m.status === "complete"
                   ? <button onClick={()=>{if(confirm(`Reset this match? Scores will be cleared and players can re-record.`)) resetMatch(m.id);}} style={{...btnS(false),padding:"4px 8px",fontSize:10}}>↺ Reset</button>
@@ -288,10 +329,10 @@ export default function LeagueTab({
             const m = curMatches.find(x => x.id === forfeitTarget);
             if (!m) return null;
             return <div style={{marginTop:6,padding:"8px 10px",background:"rgba(212,184,74,0.06)",border:`1px solid ${C.gold}`,borderRadius:6,fontSize:11}}>
-              <div style={{marginBottom:6}}>Declare winner of <strong>{m.player1} vs {m.player2}</strong>:</div>
+              <div style={{marginBottom:6}}>Declare winner of <strong>{nick(m.player1)} vs {nick(m.player2)}</strong>:</div>
               <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                <button onClick={async()=>{await forfeitMatch(m.id, m.player1); setForfeitTarget(null);}} style={{...btnS(true),padding:"4px 10px",fontSize:11}}>{m.player1}</button>
-                <button onClick={async()=>{await forfeitMatch(m.id, m.player2); setForfeitTarget(null);}} style={{...btnS(true),padding:"4px 10px",fontSize:11}}>{m.player2}</button>
+                <button onClick={async()=>{await forfeitMatch(m.id, m.player1); setForfeitTarget(null);}} style={{...btnS(true),padding:"4px 10px",fontSize:11}}>{nick(m.player1)}</button>
+                <button onClick={async()=>{await forfeitMatch(m.id, m.player2); setForfeitTarget(null);}} style={{...btnS(true),padding:"4px 10px",fontSize:11}}>{nick(m.player2)}</button>
                 <button onClick={async()=>{await forfeitMatch(m.id, "Tie"); setForfeitTarget(null);}} style={{...btnS(false),padding:"4px 10px",fontSize:11}}>Tie</button>
                 <button onClick={()=>setForfeitTarget(null)} style={{...btnS(false),padding:"4px 10px",fontSize:11,color:C.muted}}>Cancel</button>
               </div>
@@ -299,44 +340,74 @@ export default function LeagueTab({
           })()}
         </div>
 
+        {/* Championship course (post-start edit) */}
+        {(curLeague.playoffSizeOverride !== 0) && <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>🏆 Championship Course</div>
+          <select value={curLeague.championshipCourse || ""} onChange={e => updateLeagueConfig(curLeague.id, { championshipCourse: e.target.value || null })} style={{width:"100%",padding:"6px 10px",borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:12}}>
+            <option value="">— Decide at the time —</option>
+            {(allCourses || []).map(c => <option key={c.id || c.name} value={c.name}>{c.name}</option>)}
+          </select>
+          <div style={{fontSize:9,color:C.muted,marginTop:4}}>Updates the F match's course (if it's been created and not yet played).</div>
+        </div>}
+
+        {/* Player nicknames */}
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Player Nicknames</div>
+          <div style={{fontSize:9,color:C.muted,marginBottom:6}}>Optional display name for each player in this league.</div>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {(curLeague.players||[]).map(p => {
+              const current = (curLeague.nicknames||{})[p] || "";
+              const draftKey = p;
+              const draftVal = nickDrafts[draftKey] != null ? nickDrafts[draftKey] : current;
+              return (
+                <div key={p} style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
+                  <div style={{flex:1,fontWeight:600,color:C.muted}}>{p}</div>
+                  <input value={draftVal} onChange={e=>setNickDrafts(d=>({...d,[draftKey]:e.target.value}))} placeholder="(no nickname)" style={{...inputS,width:120}}/>
+                  <button onClick={async()=>{const v=draftVal.trim();const next={...(curLeague.nicknames||{})};if(v)next[p]=v;else delete next[p];await updateLeagueConfig(curLeague.id,{nicknames:next});setNickDrafts(d=>{const n={...d};delete n[draftKey];return n;});}} disabled={draftVal === current} style={{...btnS(draftVal !== current),padding:"4px 8px",fontSize:10,opacity:draftVal===current?0.5:1}}>Save</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Per-player handicap override */}
         <div>
-          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Player Handicaps</div>
-          <div style={{fontSize:9,color:C.muted,marginBottom:6}}>Override the displayed handicap for a player in this league. Doesn't affect scoring.</div>
-          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Player Handicaps {curLeague.useHandicapScoring && curLeague.handicapSource==="auto" && <span style={{fontSize:9,color:C.muted}}>(auto from rounds — read only)</span>}</div>
+          <div style={{fontSize:9,color:C.muted,marginBottom:6}}>{curLeague.useHandicapScoring ? (curLeague.handicapSource === "auto" ? "Computed live from each player's saved 18-hole rounds." : "Used to compute adjusted totals when matches are saved.") : "Display only — not used for scoring."}{curLeague.handicapCap != null && ` · Capped at ±${Math.abs(curLeague.handicapCap)}`}</div>
+          {curLeague.handicapSource !== "auto" && <div style={{display:"flex",flexDirection:"column",gap:4}}>
             {(curLeague.players||[]).map(p => {
               const current = handicaps[p];
               const draftKey = p;
               const draftVal = hcpDrafts[draftKey] != null ? hcpDrafts[draftKey] : (current != null ? String(current) : "");
               return (
                 <div key={p} style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
-                  <div style={{flex:1,fontWeight:600}}>{p}</div>
+                  <div style={{flex:1,fontWeight:600}}>{nick(p)}</div>
                   <input value={draftVal} onChange={e=>setHcpDrafts(d=>({...d,[draftKey]:e.target.value}))} placeholder="—" inputMode="numeric" style={{...inputS,width:60,textAlign:"center"}}/>
                   <button onClick={async()=>{const v=draftVal.trim();await setLeagueHandicap(curLeague.id, p, v===""?null:parseInt(v,10));setHcpDrafts(d=>{const n={...d};delete n[draftKey];return n;});}} style={{...btnS(true),padding:"4px 8px",fontSize:10}}>Save</button>
                   {current != null && <button onClick={async()=>{await setLeagueHandicap(curLeague.id, p, null);setHcpDrafts(d=>{const n={...d};delete n[draftKey];return n;});}} style={{...btnS(false),padding:"4px 8px",fontSize:10}}>Clear</button>}
                 </div>
               );
             })}
-          </div>
+          </div>}
         </div>
       </div>}
 
       {/* My pending matches */}
       {leagueView==="standings"&&myPending.length>0&&<div style={{background:"rgba(74,170,74,0.06)",borderRadius:12,padding:14,border:`1px solid ${C.greenLt}`}}>
         <div style={{fontWeight:700,marginBottom:8,fontSize:13}}>🎯 Your Matches</div>
-        {myPending.map(m=>{const opp=m.player1===me?m.player2:m.player1;const iPlayed=(m.player1===me&&m.p1Total!=null)||(m.player2===me&&m.p2Total!=null);const isF=m.roundType==="F";return(<div key={m.id} style={{background:isF?"linear-gradient(135deg,#2a1a00,#1a0f00)":C.card,borderRadius:8,padding:12,border:`1px solid ${isF?"#d4b84a":C.border}`,marginBottom:6}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14,color:isF?"#d4b84a":C.text}}>{isF?"🏆 Championship vs ":"vs "}{opp}</div><div style={{fontSize:10,color:C.muted}}>Rd {m.round}{m.roundType!=="regular"?` · ${m.roundType}`:""}{m.course?` · ${m.course}`:""}</div></div>{iPlayed?<div style={{fontSize:11,color:C.greenLt,fontWeight:600}}>✓ Played — Waiting for opponent</div>:<button onClick={()=>playLeagueMatch(m.id)} style={{...btnS(true),padding:"8px 16px",fontSize:12}}>⛳ {isF?"TEE OFF":"Play"}</button>}</div></div>);})}
+        {myPending.map(m=>{const opp=m.player1===me?m.player2:m.player1;const iPlayed=(m.player1===me&&m.p1Total!=null)||(m.player2===me&&m.p2Total!=null);const isF=m.roundType==="F";return(<div key={m.id} style={{background:isF?"linear-gradient(135deg,#2a1a00,#1a0f00)":C.card,borderRadius:8,padding:12,border:`1px solid ${isF?"#d4b84a":C.border}`,marginBottom:6}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14,color:isF?"#d4b84a":C.text}}>{isF?"🏆 Championship vs ":"vs "}{nick(opp)}</div><div style={{fontSize:10,color:C.muted}}>Rd {m.round}{m.roundType!=="regular"?` · ${m.roundType}`:""}{m.course?` · ${m.course}`:""}</div></div>{iPlayed?<div style={{fontSize:11,color:C.greenLt,fontWeight:600}}>✓ Played — Waiting for opponent</div>:<button onClick={()=>playLeagueMatch(m.id)} style={{...btnS(true),padding:"8px 16px",fontSize:12}}>⛳ {isF?"TEE OFF":"Play"}</button>}</div></div>);})}
       </div>}
 
       {/* Standings table */}
-      {leagueView==="standings"&&(()=>{const lgHcps=curLeague.handicaps||{};const showHcpCol=Object.keys(lgHcps).length>0;return <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:400}}><thead><tr style={{background:C.accent}}><th style={{padding:"8px 6px",textAlign:"left"}}>#</th><th style={{padding:"8px 4px",textAlign:"left"}}>Player</th>{showHcpCol&&<th style={{padding:"8px 4px",textAlign:"center"}}>HDCP</th>}<th style={{padding:"8px 4px",textAlign:"center"}}>Pts</th><th style={{padding:"8px 4px",textAlign:"center"}}>W</th><th style={{padding:"8px 4px",textAlign:"center"}}>L</th><th style={{padding:"8px 4px",textAlign:"center"}}>T</th><th style={{padding:"8px 4px",textAlign:"center"}}>+/-</th><th style={{padding:"8px 4px",textAlign:"center"}}>Avg</th></tr></thead><tbody>{dynStandings.map((s,i)=>{const fmt=LEAGUE_FORMATS[curLeague.players?.length];const inPO=fmt&&i<fmt.playoffSize;const hcp=lgHcps[s.player];return(<tr key={s.player} style={{borderTop:`1px solid ${C.border}`,background:inPO?"rgba(74,170,74,0.04)":"transparent"}}><td style={{padding:"8px 6px",fontWeight:700,color:i===0?C.gold:inPO?C.greenLt:C.muted}}>{i+1}</td><td style={{padding:"8px 4px",fontWeight:600,fontSize:11,color:s.player===me?C.greenLt:C.text,cursor:"pointer"}} onClick={()=>openPlayerProfile(s.player)}>{s.player}{s.player===me?" (you)":""}</td>{showHcpCol&&<td style={{padding:"8px 4px",textAlign:"center",color:hcp!=null?(hcp<0?C.greenLt:hcp>0?C.red:C.text):C.muted}}>{hcp!=null?(hcp>0?`+${hcp}`:hcp):"—"}</td>}<td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:C.gold}}>{s.pts}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.greenLt}}>{s.w}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.red}}>{s.l}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.muted}}>{s.t}</td><td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:s.diff<0?C.greenLt:s.diff>0?C.red:C.muted}}>{s.diff===0?"E":s.diff>0?`+${s.diff}`:s.diff}</td><td style={{padding:"8px 4px",textAlign:"center"}}>{s.avg||"—"}</td></tr>);})}</tbody></table></div>{LEAGUE_FORMATS[curLeague.players?.length]&&<div style={{padding:"8px 12px",background:C.card2,fontSize:10,color:C.muted,borderTop:`1px solid ${C.border}`}}>Top {LEAGUE_FORMATS[curLeague.players.length].playoffSize} qualify · Win=2pts, Tie=1pt</div>}</div>;})()}
+      {leagueView==="standings"&&(()=>{const lgHcps=curLeague.handicaps||{};const ps=effectivePlayoffSize(curLeague);const showHcpCol=curLeague.useHandicapScoring||Object.keys(lgHcps).length>0;return <div style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:400}}><thead><tr style={{background:C.accent}}><th style={{padding:"8px 6px",textAlign:"left"}}>#</th><th style={{padding:"8px 4px",textAlign:"left"}}>Player</th>{showHcpCol&&<th style={{padding:"8px 4px",textAlign:"center"}}>HDCP</th>}<th style={{padding:"8px 4px",textAlign:"center"}}>Pts</th><th style={{padding:"8px 4px",textAlign:"center"}}>W</th><th style={{padding:"8px 4px",textAlign:"center"}}>L</th><th style={{padding:"8px 4px",textAlign:"center"}}>T</th><th style={{padding:"8px 4px",textAlign:"center"}}>+/-</th><th style={{padding:"8px 4px",textAlign:"center"}}>Avg</th></tr></thead><tbody>{dynStandings.map((s,i)=>{const inPO=i<ps;const hcp=lgHcps[s.player];return(<tr key={s.player} style={{borderTop:`1px solid ${C.border}`,background:inPO?"rgba(74,170,74,0.04)":"transparent"}}><td style={{padding:"8px 6px",fontWeight:700,color:i===0?C.gold:inPO?C.greenLt:C.muted}}>{i+1}</td><td style={{padding:"8px 4px",fontWeight:600,fontSize:11,color:s.player===me?C.greenLt:C.text,cursor:"pointer"}} onClick={()=>openPlayerProfile(s.player)}>{nick(s.player)}{s.player===me?" (you)":""}</td>{showHcpCol&&<td style={{padding:"8px 4px",textAlign:"center",color:hcp!=null?(hcp<0?C.greenLt:hcp>0?C.red:C.text):C.muted}}>{hcp!=null?(hcp>0?`+${hcp}`:hcp):"—"}</td>}<td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:C.gold}}>{s.pts}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.greenLt}}>{s.w}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.red}}>{s.l}</td><td style={{padding:"8px 4px",textAlign:"center",color:C.muted}}>{s.t}</td><td style={{padding:"8px 4px",textAlign:"center",fontWeight:700,color:s.diff<0?C.greenLt:s.diff>0?C.red:C.muted}}>{s.diff===0?"E":s.diff>0?`+${s.diff}`:s.diff}</td><td style={{padding:"8px 4px",textAlign:"center"}}>{s.avg||"—"}</td></tr>);})}</tbody></table></div>{ps>0?<div style={{padding:"8px 12px",background:C.card2,fontSize:10,color:C.muted,borderTop:`1px solid ${C.border}`}}>Top {ps} qualify · Win=2pts, Tie=1pt</div>:<div style={{padding:"8px 12px",background:C.card2,fontSize:10,color:C.muted,borderTop:`1px solid ${C.border}`}}>No playoffs · Win=2pts, Tie=1pt</div>}</div>;})()}
 
       {/* Schedule */}
-      {leagueView==="schedule"&&<div style={{display:"flex",flexDirection:"column",gap:10}}>{Array.from({length:totalRds},(_,ri)=>{const rd=ri+1;const rm=regMatches.filter(m=>m.round===rd);if(!rm.length)return null;return(<div key={rd}><div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:6}}>Round {rd}</div>{rm.map(m=>{const my=m.player1===me||m.player2===me;const p1Score=m.p1Total!=null?(m.status==="complete"||m.player1===me?String(m.p1Total):"🔒"):"";const p2Score=m.p2Total!=null?(m.status==="complete"||m.player2===me?String(m.p2Total):"🔒"):"";return(<div key={m.id} style={{background:my?"rgba(74,170,74,0.06)":C.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${my?C.greenLt:C.border}`,marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}><div style={{flex:1}}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:m.winner===m.player1?700:400,color:m.winner===m.player1?C.greenLt:C.text}}>{m.player1}</span><span style={{fontWeight:700}}>{p1Score}</span></div><div style={{display:"flex",justifyContent:"space-between",marginTop:2}}><span style={{fontWeight:m.winner===m.player2?700:400,color:m.winner===m.player2?C.greenLt:C.text}}>{m.player2}</span><span style={{fontWeight:700}}>{p2Score}</span></div></div><div style={{textAlign:"right",marginLeft:12,minWidth:70}}><div style={{fontSize:10,color:C.muted}}>{m.course||"TBD"}</div>{m.status==="complete"?<div style={{fontWeight:700,fontSize:11,color:m.winner==="Tie"?C.muted:C.gold,marginTop:2}}>{m.winner==="Tie"?"Tie":m.winner}</div>:my?<button onClick={()=>playLeagueMatch(m.id)} style={{...btnS(true),padding:"4px 10px",fontSize:10,marginTop:2}}>Play</button>:<div style={{fontSize:10,color:C.muted,marginTop:2}}>Pending</div>}</div></div>);})}</div>);})}</div>}
+      {leagueView==="schedule"&&<div style={{display:"flex",flexDirection:"column",gap:10}}>{Array.from({length:totalRds},(_,ri)=>{const rd=ri+1;const rm=regMatches.filter(m=>m.round===rd);if(!rm.length)return null;return(<div key={rd}><div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:6}}>Round {rd}</div>{rm.map(m=>{const my=m.player1===me||m.player2===me;const p1Score=m.p1Total!=null?(m.status==="complete"||m.player1===me?String(m.p1Total):"🔒"):"";const p2Score=m.p2Total!=null?(m.status==="complete"||m.player2===me?String(m.p2Total):"🔒"):"";return(<div key={m.id} style={{background:my?"rgba(74,170,74,0.06)":C.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${my?C.greenLt:C.border}`,marginBottom:4,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12}}><div style={{flex:1}}><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:m.winner===m.player1?700:400,color:m.winner===m.player1?C.greenLt:C.text}}>{nick(m.player1)}</span><span style={{fontWeight:700}}>{p1Score}</span></div><div style={{display:"flex",justifyContent:"space-between",marginTop:2}}><span style={{fontWeight:m.winner===m.player2?700:400,color:m.winner===m.player2?C.greenLt:C.text}}>{nick(m.player2)}</span><span style={{fontWeight:700}}>{p2Score}</span></div></div><div style={{textAlign:"right",marginLeft:12,minWidth:70}}><div style={{fontSize:10,color:C.muted}}>{m.course||"TBD"}</div>{m.status==="complete"?<div style={{fontWeight:700,fontSize:11,color:m.winner==="Tie"?C.muted:C.gold,marginTop:2}}>{m.winner==="Tie"?"Tie":nick(m.winner)}</div>:my?<button onClick={()=>playLeagueMatch(m.id)} style={{...btnS(true),padding:"4px 10px",fontSize:10,marginTop:2}}>Play</button>:<div style={{fontSize:10,color:C.muted,marginTop:2}}>Pending</div>}</div></div>);})}</div>);})}</div>}
 
       {/* Bracket */}
       {leagueView==="bracket"&&<div style={{display:"flex",flexDirection:"column",gap:10}}>
         {(curLeague.status==="playoffs"||curLeague.status==="complete")&&poMatches.length>0?
-          poMatches.sort((a,b)=>{const o={QF:0,SF:1,F:2};return(o[a.roundType]||0)-(o[b.roundType]||0);}).map(m=>{const my=m.player1===me||m.player2===me;const isF=m.roundType==="F";const p1Score=m.p1Total!=null?(m.status==="complete"||m.player1===me?m.p1Total:"🔒"):"";const p2Score=m.p2Total!=null?(m.status==="complete"||m.player2===me?m.p2Total:"🔒"):"";return(<div key={m.id} style={{background:isF?"linear-gradient(135deg,#2a1a00,#1a0f00)":C.card,borderRadius:8,padding:12,border:`1px solid ${isF?"#d4b84a":C.border}`}}><div style={{fontSize:10,color:isF?C.gold:C.muted,marginBottom:4,fontWeight:600}}>{m.roundType==="QF"?"Quarterfinal":m.roundType==="SF"?"Semifinal":"🏆 Championship"}{m.course?` · ${m.course}`:""}</div>{m.player1&&<div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:m.winner===m.player1?700:400,color:m.winner===m.player1?C.greenLt:C.text}}>{m.player1}</span><span style={{fontWeight:700}}>{p1Score}</span></div>}{m.player2&&<div style={{display:"flex",justifyContent:"space-between",marginTop:2}}><span style={{fontWeight:m.winner===m.player2?700:400,color:m.winner===m.player2?C.greenLt:C.text}}>{m.player2}</span><span style={{fontWeight:700}}>{p2Score}</span></div>}{m.status==="complete"&&m.winner&&<div style={{textAlign:"right",fontSize:10,color:C.gold,marginTop:4}}>Winner: {m.winner}</div>}{m.status!=="complete"&&my&&m.player1&&m.player2&&<button onClick={()=>playLeagueMatch(m.id)} style={{...btnS(true),width:"100%",padding:10,marginTop:8,fontSize:12}}>⛳ Play</button>}{m.status!=="complete"&&(!m.player1||!m.player2)&&<div style={{textAlign:"center",fontSize:11,color:C.muted,marginTop:4}}>Awaiting results...</div>}</div>);})
+          poMatches.sort((a,b)=>{const o={QF:0,SF:1,F:2};return(o[a.roundType]||0)-(o[b.roundType]||0);}).map(m=>{const my=m.player1===me||m.player2===me;const isF=m.roundType==="F";const p1Score=m.p1Total!=null?(m.status==="complete"||m.player1===me?m.p1Total:"🔒"):"";const p2Score=m.p2Total!=null?(m.status==="complete"||m.player2===me?m.p2Total:"🔒"):"";return(<div key={m.id} style={{background:isF?"linear-gradient(135deg,#2a1a00,#1a0f00)":C.card,borderRadius:8,padding:12,border:`1px solid ${isF?"#d4b84a":C.border}`}}><div style={{fontSize:10,color:isF?C.gold:C.muted,marginBottom:4,fontWeight:600}}>{m.roundType==="QF"?"Quarterfinal":m.roundType==="SF"?"Semifinal":"🏆 Championship"}{m.course?` · ${m.course}`:""}</div>{m.player1&&<div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontWeight:m.winner===m.player1?700:400,color:m.winner===m.player1?C.greenLt:C.text}}>{nick(m.player1)}</span><span style={{fontWeight:700}}>{p1Score}</span></div>}{m.player2&&<div style={{display:"flex",justifyContent:"space-between",marginTop:2}}><span style={{fontWeight:m.winner===m.player2?700:400,color:m.winner===m.player2?C.greenLt:C.text}}>{nick(m.player2)}</span><span style={{fontWeight:700}}>{p2Score}</span></div>}{m.status==="complete"&&m.winner&&<div style={{textAlign:"right",fontSize:10,color:C.gold,marginTop:4}}>Winner: {nick(m.winner)}</div>}{m.status!=="complete"&&my&&m.player1&&m.player2&&<button onClick={()=>playLeagueMatch(m.id)} style={{...btnS(true),width:"100%",padding:10,marginTop:8,fontSize:12}}>⛳ Play</button>}{m.status!=="complete"&&(!m.player1||!m.player2)&&<div style={{textAlign:"center",fontSize:11,color:C.muted,marginTop:4}}>Awaiting results...</div>}</div>);})
         :<div style={{textAlign:"center",padding:30,color:C.muted}}><div style={{fontSize:14}}>🏆</div><div style={{marginTop:8}}>Bracket unlocks after regular season</div><div style={{fontSize:11,marginTop:4}}>{done}/{regMatches.length} matches complete</div></div>}
       </div>}
     </div>);
@@ -382,10 +453,42 @@ export default function LeagueTab({
           </div>
           <div style={{fontSize:9,color:C.muted,marginTop:4}}>{newCourseRotation==="scheduled"?"You'll pick a course per week in the lobby":"First player to tee off picks the course"}</div>
         </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Playoffs</div>
+          <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+            {[["auto","Auto"],["0","None"],["2","Top 2"],["4","Top 4"],["8","Top 8"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setNewPlayoffSize(v)} style={{flex:"1 1 60px",padding:"6px 4px",borderRadius:6,border:newPlayoffSize===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newPlayoffSize===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:11,fontWeight:newPlayoffSize===v?700:400}}>{l}</button>
+            ))}
+          </div>
+          <div style={{fontSize:9,color:C.muted,marginTop:4}}>{newPlayoffSize==="auto"?"Bracket size based on player count":newPlayoffSize==="0"?"League ends after regular season":`Top ${newPlayoffSize} qualify`}</div>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Handicap Scoring</div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <button onClick={()=>setNewUseHcpScoring(h=>!h)} style={{width:48,height:26,borderRadius:13,border:"none",cursor:"pointer",position:"relative",background:newUseHcpScoring?C.greenLt:C.card2,transition:"all 0.2s"}}><div style={{width:20,height:20,borderRadius:10,background:C.white,position:"absolute",top:3,left:newUseHcpScoring?25:3,transition:"left 0.2s"}}/></button>
+            <div style={{fontSize:11,color:C.muted}}>{newUseHcpScoring?"Adjusted totals decide winners":"Raw scores decide winners"}</div>
+          </div>
+          {newUseHcpScoring && <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:6}}>
+            <div style={{fontSize:10,color:C.muted}}>Source</div>
+            <div style={{display:"flex",gap:6}}>
+              {[["manual","Manual"],["auto","Auto from rounds"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setNewHcpSource(v)} style={{flex:1,padding:"6px 6px",borderRadius:6,border:newHcpSource===v?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:newHcpSource===v?C.accent:C.card2,color:C.text,cursor:"pointer",fontSize:11,fontWeight:newHcpSource===v?700:400}}>{l}</button>
+              ))}
+            </div>
+            <div style={{fontSize:9,color:C.muted}}>{newHcpSource==="manual"?"Set each player's handicap from the Manage panel":"Computed from each player's saved rounds (best 40% diff). Updates automatically."}</div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <div style={{fontSize:11,color:C.muted}}>Cap:</div>
+              <input value={newHcpCap} onChange={e=>setNewHcpCap(e.target.value)} placeholder="e.g. 6" inputMode="numeric" style={{...inputS,width:80}}/>
+              <div style={{fontSize:9,color:C.muted}}>Max ±X strokes</div>
+            </div>
+          </div>}
+        </div>
         <button onClick={async()=>{
           if(!newName.trim())return;
-          await createLeague(newName.trim(),{holeCount:newHoleCount,scheduleType:newScheduleType,courseRotation:newCourseRotation});
-          setNewName("");setNewHoleCount(18);setNewScheduleType("single");setNewCourseRotation("free");setShowCreate(false);
+          const playoffSizeOverride = newPlayoffSize==="auto" ? null : parseInt(newPlayoffSize,10);
+          const handicapCap = newHcpCap.trim()==="" ? null : (parseInt(newHcpCap,10) || null);
+          await createLeague(newName.trim(),{holeCount:newHoleCount,scheduleType:newScheduleType,courseRotation:newCourseRotation,playoffSizeOverride,useHandicapScoring:newUseHcpScoring,handicapSource:newHcpSource,handicapCap});
+          setNewName("");setNewHoleCount(18);setNewScheduleType("single");setNewCourseRotation("free");setNewPlayoffSize("auto");setNewUseHcpScoring(false);setNewHcpSource("manual");setNewHcpCap("");setShowCreate(false);
         }} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
         <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>{MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players · You'll get an invite code to share</div>
       </div>
