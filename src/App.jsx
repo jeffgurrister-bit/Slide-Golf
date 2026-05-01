@@ -117,7 +117,7 @@ export default function App(){
     const playersArr=[me,...roundPlayers.filter(p=>p!==me)];
     const scoresObj={};const hioObj={};
     playersArr.forEach(p=>{scoresObj[p]=allScores[p]||Array(18).fill(null);hioObj[p]=0;});
-    const ref=await addDoc(collection(db,"liveRounds"),{code,host:me,courseName:selCourse.name,courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,pga:selCourse.pga||false,tournament:selCourse.tournament||""},players:playersArr,status:"playing",scores:scoresObj,holeInOnes:hioObj,hideScores,useHdcp,hdcps,activeTourney:activeTourney||null,scoreMode:liveScoreMode,createdAt:Date.now()});
+    const ref=await addDoc(collection(db,"liveRounds"),{code,host:me,courseName:selCourse.name,courseData:{name:selCourse.name,level:selCourse.level,holes:selCourse.holes,pga:selCourse.pga||false,tournament:selCourse.tournament||""},players:playersArr,status:"playing",scores:scoresObj,holeInOnes:hioObj,hideScores,useHdcp,hdcps,activeTourney:activeTourney||null,activeLeagueMatch:activeLeagueMatch||null,scoreMode:liveScoreMode,createdAt:Date.now()});
     setLiveId(ref.id);
   }
   async function joinLive(){
@@ -132,6 +132,7 @@ export default function App(){
       const hio={...data.holeInOnes};if(hio[me]===undefined)hio[me]=0;
       await updateDoc(doc(db,"liveRounds",d.id),{players:pls,scores,holeInOnes:hio});
       setLiveId(d.id);setSelCourse(data.courseData);setActiveTourney(data.activeTourney||null);
+      if(data.activeLeagueMatch)setActiveLeagueMatch(data.activeLeagueMatch);
       setLiveScoreMode(data.scoreMode||"self");setRoundPlayers(pls);setAllScores(scores);
       setAllShotLogs(prev=>({...prev,[me]:prev[me]||Array.from({length:18},()=>[])}));
       setHideScores(data.hideScores||false);setUseHdcp(data.useHdcp||false);setHdcps(data.hdcps||{});
