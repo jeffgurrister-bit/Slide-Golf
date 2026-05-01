@@ -124,6 +124,10 @@ export function computeStandings(players, matches) {
       h2h[p2][p1] = (h2h[p2][p1] || 0) + 1;
     } else if (m.winner === "Tie") {
       stats[p1].pts++; stats[p2].pts++; stats[p1].t++; stats[p2].t++;
+    } else if (m.doubleForfeit) {
+      // Both no-showed: no points, but counts as a loss against each player's
+      // record so the no-show is reflected in their win/loss line.
+      stats[p1].l++; stats[p2].l++;
     }
   });
   return Object.values(stats)

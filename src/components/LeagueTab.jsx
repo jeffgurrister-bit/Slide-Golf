@@ -9,7 +9,8 @@ export default function LeagueTab({
   createLeague, updateLeagueConfig, joinLeagueByCode, startLeagueSeason, playLeagueMatch,
   selectedLeague, setSelectedLeague,
   openPlayerProfile,
-  renameLeague, swapWeekCourse, setMatchCourse, resetMatch, forfeitMatch, setLeagueHandicap
+  renameLeague, swapWeekCourse, setMatchCourse, resetMatch, forfeitMatch, setLeagueHandicap,
+  extendMatchDeadline, replacePlayer, addPlayerMidSeason, removePlayerMidSeason
 }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoinCode, setShowJoinCode] = useState(false);
@@ -22,6 +23,7 @@ export default function LeagueTab({
   const [newUseHcpScoring, setNewUseHcpScoring] = useState(false);
   const [newHcpSource, setNewHcpSource] = useState("manual"); // "manual" | "auto"
   const [newHcpCap, setNewHcpCap] = useState("");
+  const [newDeadlineDays, setNewDeadlineDays] = useState(""); // "" = no deadline
   const [joinCode, setJoinCode] = useState("");
   const [showManage, setShowManage] = useState(false);
   const [showSchedulePreview, setShowSchedulePreview] = useState(false);
@@ -29,6 +31,11 @@ export default function LeagueTab({
   const [forfeitTarget, setForfeitTarget] = useState(null); // matchId
   const [hcpDrafts, setHcpDrafts] = useState({}); // { player: stringValue }
   const [nickDrafts, setNickDrafts] = useState({}); // { player: stringValue }
+  const [manageDeadline, setManageDeadline] = useState("");
+  const [addPlayerName, setAddPlayerName] = useState("");
+  const [replaceFrom, setReplaceFrom] = useState("");
+  const [replaceTo, setReplaceTo] = useState("");
+  const [removeTarget, setRemoveTarget] = useState(""); // playerName
   // Nickname helper: if a league has a nickname for a player, show "Nick (Real)"
   // when expanded, or just nickname when compact.
   const nick = (player) => {
@@ -264,6 +271,17 @@ export default function LeagueTab({
           </div>
         </div>
 
+        {/* Weekly deadline */}
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Weekly Deadline</div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <input value={manageDeadline !== "" ? manageDeadline : (curLeague.weeklyDeadlineDays != null ? String(curLeague.weeklyDeadlineDays) : "")} onChange={e=>setManageDeadline(e.target.value.replace(/[^0-9]/g,""))} placeholder="off" inputMode="numeric" style={{...inputS,width:80}}/>
+            <button onClick={async()=>{const v=manageDeadline.trim()===""?null:parseInt(manageDeadline,10)||null;await updateLeagueConfig(curLeague.id,{weeklyDeadlineDays:v});setManageDeadline("");}} style={{...btnS(true),padding:"6px 12px",fontSize:11}}>Save</button>
+            <span style={{fontSize:9,color:C.muted}}>{curLeague.weeklyDeadlineDays?`Currently ${curLeague.weeklyDeadlineDays}d / week`:"No deadline"}</span>
+          </div>
+          <div style={{fontSize:9,color:C.muted,marginTop:4}}>Both miss → both lose. One misses → opponent wins. Use Extend below to grant extensions.</div>
+        </div>
+
         {/* Course-of-the-week edits (only if league uses scheduled rotation) */}
         {curLeague.courseRotation === "scheduled" && <div>
           <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Weekly Courses</div>
@@ -316,11 +334,16 @@ export default function LeagueTab({
               <div key={m.id} style={{display:"flex",alignItems:"center",gap:6,fontSize:11,background:C.card2,borderRadius:6,padding:"6px 8px"}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.player1?nick(m.player1):"TBD"} vs {m.player2?nick(m.player2):"TBD"}</div>
-                  <div style={{fontSize:9,color:C.muted}}>Wk {m.round} · {m.roundType==="regular"?"Reg":m.roundType} · {m.status==="complete"?<span style={{color:C.greenLt}}>{m.winner==="Tie"?"Tie":`${nick(m.winner)} won`}{m.forfeit?" (forfeit)":""}</span>:<span>pending</span>}</div>
+                  <div style={{fontSize:9,color:C.muted}}>Wk {m.round} · {m.roundType==="regular"?"Reg":m.roundType} · {m.status==="complete"?<span style={{color:C.greenLt}}>{m.winner==="Tie"?"Tie":m.doubleForfeit?"Double forfeit":`${nick(m.winner)} won`}{m.forfeit?" (forfeit)":""}</span>:<span>pending{m.deadlineOverride?` · ext to ${new Date(m.deadlineOverride).toLocaleDateString()}`:""}</span>}</div>
                 </div>
                 {m.status === "complete"
                   ? <button onClick={()=>{if(confirm(`Reset this match? Scores will be cleared and players can re-record.`)) resetMatch(m.id);}} style={{...btnS(false),padding:"4px 8px",fontSize:10}}>↺ Reset</button>
-                  : (m.player1 && m.player2 && <button onClick={()=>setForfeitTarget(forfeitTarget===m.id?null:m.id)} style={{...btnS(forfeitTarget===m.id),padding:"4px 8px",fontSize:10}}>Forfeit</button>)
+                  : (m.player1 && m.player2 && <div style={{display:"flex",gap:4,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                      {curLeague.weeklyDeadlineDays && <button onClick={()=>extendMatchDeadline(m.id, 1)} style={{...btnS(false),padding:"4px 6px",fontSize:10}} title="Extend by 1 day">+1d</button>}
+                      {curLeague.weeklyDeadlineDays && <button onClick={()=>extendMatchDeadline(m.id, 3)} style={{...btnS(false),padding:"4px 6px",fontSize:10}} title="Extend by 3 days">+3d</button>}
+                      {curLeague.weeklyDeadlineDays && m.deadlineOverride && <button onClick={()=>extendMatchDeadline(m.id, null)} style={{...btnS(false),padding:"4px 6px",fontSize:10,color:C.muted}} title="Clear extension">↺</button>}
+                      <button onClick={()=>setForfeitTarget(forfeitTarget===m.id?null:m.id)} style={{...btnS(forfeitTarget===m.id),padding:"4px 8px",fontSize:10}}>Forfeit</button>
+                    </div>)
                 }
               </div>
             ))}
@@ -390,6 +413,52 @@ export default function LeagueTab({
             })}
           </div>}
         </div>
+
+        {/* Player management */}
+        {curLeague.status === "active" && <div style={{borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+          <div style={{fontSize:11,color:C.muted,marginBottom:6,fontWeight:600}}>Player Management</div>
+
+          {/* Add */}
+          <div style={{marginBottom:10}}>
+            <div style={{fontSize:10,color:C.muted,marginBottom:4}}>Add a player mid-season</div>
+            <div style={{display:"flex",gap:6}}>
+              <input value={addPlayerName} onChange={e=>setAddPlayerName(e.target.value)} placeholder="Player name" style={{...inputS,flex:1}}/>
+              <button onClick={async()=>{if(!addPlayerName.trim())return;await addPlayerMidSeason(curLeague.id, addPlayerName.trim());setAddPlayerName("");}} style={{...btnS(addPlayerName.trim()),padding:"6px 10px",fontSize:11,opacity:addPlayerName.trim()?1:0.5}}>+ Add</button>
+            </div>
+            <div style={{fontSize:9,color:C.muted,marginTop:3}}>Catch-up matches against everyone get appended to the schedule.</div>
+          </div>
+
+          {/* Replace */}
+          <div style={{marginBottom:10}}>
+            <div style={{fontSize:10,color:C.muted,marginBottom:4}}>Replace a player (sub)</div>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <select value={replaceFrom} onChange={e=>setReplaceFrom(e.target.value)} style={{padding:"6px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:11,flex:1}}>
+                <option value="">— Old player —</option>
+                {(curLeague.players||[]).map(p => <option key={p} value={p}>{nick(p)}</option>)}
+              </select>
+              <span style={{fontSize:11,color:C.muted}}>→</span>
+              <input value={replaceTo} onChange={e=>setReplaceTo(e.target.value)} placeholder="New name" style={{...inputS,flex:1}}/>
+              <button onClick={async()=>{if(!replaceFrom||!replaceTo.trim())return;await replacePlayer(curLeague.id, replaceFrom, replaceTo.trim());setReplaceFrom("");setReplaceTo("");}} style={{...btnS(replaceFrom&&replaceTo.trim()),padding:"6px 10px",fontSize:11,opacity:(replaceFrom&&replaceTo.trim())?1:0.5}}>Swap</button>
+            </div>
+            <div style={{fontSize:9,color:C.muted,marginTop:3}}>Pending matches re-point to the new player. Completed stay attributed to the original.</div>
+          </div>
+
+          {/* Remove */}
+          <div>
+            <div style={{fontSize:10,color:C.muted,marginBottom:4}}>Remove a player</div>
+            <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+              <select value={removeTarget} onChange={e=>setRemoveTarget(e.target.value)} style={{padding:"6px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.card2,color:C.text,fontSize:11,flex:1,minWidth:120}}>
+                <option value="">— Pick player —</option>
+                {(curLeague.players||[]).filter(p=>p!==me).map(p => <option key={p} value={p}>{nick(p)}</option>)}
+              </select>
+              {removeTarget && <>
+                <button onClick={async()=>{if(!confirm(`Remove ${nick(removeTarget)}? Their pending matches will be FORFEITED to opponents.`))return;await removePlayerMidSeason(curLeague.id, removeTarget, "forfeit");setRemoveTarget("");}} style={{...btnS(true),padding:"6px 10px",fontSize:11}}>Forfeit pending</button>
+                <button onClick={async()=>{if(!confirm(`Remove ${nick(removeTarget)}? Their pending matches will be DELETED (no points awarded).`))return;await removePlayerMidSeason(curLeague.id, removeTarget, "void");setRemoveTarget("");}} style={{...btnS(false),padding:"6px 10px",fontSize:11}}>Void pending</button>
+              </>}
+            </div>
+            <div style={{fontSize:9,color:C.muted,marginTop:3}}>Forfeit = opponents win pending matches. Void = pending matches deleted entirely.</div>
+          </div>
+        </div>}
       </div>}
 
       {/* My pending matches */}
@@ -483,12 +552,20 @@ export default function LeagueTab({
             </div>
           </div>}
         </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Weekly Deadline</div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <input value={newDeadlineDays} onChange={e=>setNewDeadlineDays(e.target.value.replace(/[^0-9]/g,""))} placeholder="off" inputMode="numeric" style={{...inputS,width:80}}/>
+            <div style={{fontSize:9,color:C.muted}}>{newDeadlineDays?`Auto-forfeit after ${newDeadlineDays} day${newDeadlineDays==="1"?"":"s"} per week`:"No deadline — matches stay open"}</div>
+          </div>
+        </div>
         <button onClick={async()=>{
           if(!newName.trim())return;
           const playoffSizeOverride = newPlayoffSize==="auto" ? null : parseInt(newPlayoffSize,10);
           const handicapCap = newHcpCap.trim()==="" ? null : (parseInt(newHcpCap,10) || null);
-          await createLeague(newName.trim(),{holeCount:newHoleCount,scheduleType:newScheduleType,courseRotation:newCourseRotation,playoffSizeOverride,useHandicapScoring:newUseHcpScoring,handicapSource:newHcpSource,handicapCap});
-          setNewName("");setNewHoleCount(18);setNewScheduleType("single");setNewCourseRotation("free");setNewPlayoffSize("auto");setNewUseHcpScoring(false);setNewHcpSource("manual");setNewHcpCap("");setShowCreate(false);
+          const weeklyDeadlineDays = newDeadlineDays.trim()==="" ? null : (parseInt(newDeadlineDays,10) || null);
+          await createLeague(newName.trim(),{holeCount:newHoleCount,scheduleType:newScheduleType,courseRotation:newCourseRotation,playoffSizeOverride,useHandicapScoring:newUseHcpScoring,handicapSource:newHcpSource,handicapCap,weeklyDeadlineDays});
+          setNewName("");setNewHoleCount(18);setNewScheduleType("single");setNewCourseRotation("free");setNewPlayoffSize("auto");setNewUseHcpScoring(false);setNewHcpSource("manual");setNewHcpCap("");setNewDeadlineDays("");setShowCreate(false);
         }} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
         <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>{MIN_LEAGUE_PLAYERS}-{MAX_LEAGUE_PLAYERS} players · You'll get an invite code to share</div>
       </div>

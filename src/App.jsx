@@ -20,6 +20,7 @@ import HomeTab from "./components/HomeTab.jsx";
 import LeagueTab from "./components/LeagueTab.jsx";
 import CoursesTab from "./components/CoursesTab.jsx";
 import RoundDetailOverlay from "./components/RoundDetailOverlay.jsx";
+import NotificationsPanel from "./components/NotificationsPanel.jsx";
 import PlayTab from "./components/PlayTab.jsx";
 import LeaderboardTab from "./components/LeaderboardTab.jsx";
 import StatsTab from "./components/StatsTab.jsx";
@@ -52,6 +53,8 @@ export default function App(){
   const[leagueMatches,setLeagueMatches]=useState([]);
   const[selectedLeague,setSelectedLeague]=useState("s1");
   const[activeLeagueMatch,setActiveLeagueMatch]=useState(null);
+  const[notifications,setNotifications]=useState([]);
+  const[showNotifications,setShowNotifications]=useState(false);
 
   // ─── FEATURE STATE (Course Records, Round Detail, Player Profile, Edit Round, Share) ───
   const[newRecordInfo,setNewRecordInfo]=useState(null);
@@ -79,6 +82,59 @@ export default function App(){
     u.push(onSnapshot(collection(db,"leagueMatches"),s=>{setLeagueMatches(s.docs.map(d=>({id:d.id,...d.data()})));}));
     setLoaded(true);return()=>u.forEach(x=>x());
   },[]);
+
+  // Notifications: only subscribe to mine. Re-runs when `me` changes so a
+  // mid-session player switch picks up the right inbox.
+  useEffect(()=>{
+    if(!me){setNotifications([]);return;}
+    const unsub=onSnapshot(query(collection(db,"notifications"),where("recipient","==",me),orderBy("createdAt","desc")),s=>{
+      setNotifications(s.docs.map(d=>({id:d.id,...d.data()})));
+    });
+    return ()=>unsub();
+  },[me]);
+
+  // Deadline checker. Runs once on app load (after data loads) for any
+  // league I'm the creator of that has weeklyDeadlineDays set. Browser-side
+  // because we don't have Cloud Functions; runs from the creator's session
+  // so it self-throttles to "whoever opens the app." Idempotent — won't
+  // forfeit a match twice.
+  useEffect(()=>{
+    if(!loaded||!me||!leagues.length||!leagueMatches.length)return;
+    let cancelled=false;
+    (async()=>{
+      const myCreatorLeagues=leagues.filter(l=>l.creator===me&&l.status==="active"&&l.weeklyDeadlineDays&&l.startedAt);
+      for(const lg of myCreatorLeagues){
+        if(cancelled)return;
+        const dayMs=86_400_000;
+        const deadlineWindowMs=lg.weeklyDeadlineDays*dayMs;
+        const matches=leagueMatches.filter(m=>m.leagueId===lg.id&&m.roundType==="regular"&&m.status!=="complete");
+        for(const m of matches){
+          if(cancelled)return;
+          const weekStart=lg.startedAt+(m.round-1)*7*dayMs;
+          const baseDeadline=weekStart+deadlineWindowMs;
+          // Per-match override (creator-granted extension) wins over the
+          // weekly default.
+          const deadline=m.deadlineOverride||baseDeadline;
+          if(Date.now()<=deadline)continue;
+          // Past deadline: auto-forfeit. If only one player submitted their
+          // total, they win by walkover. If neither submitted, it's a double
+          // forfeit — both lose (winner=null, doubleForfeit flag).
+          const updates={status:"complete",resultsSeenBy:[],forfeit:true,margin:0};
+          if(m.p1Total!=null&&m.p2Total==null){updates.winner=m.player1;}
+          else if(m.p2Total!=null&&m.p1Total==null){updates.winner=m.player2;}
+          else{updates.winner=null;updates.doubleForfeit=true;}
+          try{
+            await updateDoc(doc(db,"leagueMatches",m.id),updates);
+            await Promise.all([m.player1,m.player2].filter(Boolean).map(p =>
+              writeNotification(p, "match_forfeited", { matchId: m.id, leagueId: lg.id, leagueName: lg.name, winner: updates.winner, manual: false })
+            ));
+          }catch(e){/* best effort; another session may have raced ahead */}
+        }
+      }
+    })();
+    return ()=>{cancelled=true;};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[loaded,me,leagues.length,leagueMatches.length]);
 
   useEffect(()=>{
     if(!liveId){setLiveData(null);return;}
@@ -109,6 +165,26 @@ export default function App(){
   async function deleteRoundFromDB(id){await deleteDoc(doc(db,"rounds",id));}
   async function saveCoursetoDB(course){return(await addDoc(collection(db,"customCourses"),{name:course.name,level:course.level,holes:course.holes,tournament:course.tournament||"",createdAt:Date.now()})).id;}
   async function deleteCourseFromDB(id){await deleteDoc(doc(db,"customCourses",id));}
+  // ─── NOTIFICATIONS ─────────────────────────────────────
+  async function writeNotification(recipient, type, payload) {
+    if (!recipient) return;
+    try {
+      await addDoc(collection(db, "notifications"), {
+        recipient, type, payload: payload || {},
+        read: false, createdAt: Date.now()
+      });
+    } catch (e) { /* non-critical: don't block the parent action if notify fails */ }
+  }
+  async function markNotificationRead(id) {
+    await updateDoc(doc(db, "notifications", id), { read: true });
+  }
+  async function markAllNotificationsRead() {
+    const unread = notifications.filter(n => !n.read);
+    await Promise.all(unread.map(n => updateDoc(doc(db, "notifications", n.id), { read: true })));
+  }
+  async function deleteNotification(id) {
+    await deleteDoc(doc(db, "notifications", id));
+  }
   function selectMe(name){setMe(name);try{localStorage.setItem("sg-me",name);}catch(e){}}
 
   // ─── LIVE ROUND FUNCTIONS ──────────────────────────────
@@ -217,6 +293,11 @@ export default function App(){
       // Per-league display config.
       nicknames: {},
       handicaps: {},
+      // Forfeit deadline. weeklyDeadlineDays = N means each week's matches
+      // must be played within N days of the league's startedAt + (week-1)*7.
+      // Null = no deadline. Browser-side checker runs on app load and
+      // auto-forfeits past-deadline matches as a tie.
+      weeklyDeadlineDays: opts.weeklyDeadlineDays != null ? Number(opts.weeklyDeadlineDays) : null,
       createdAt: Date.now()
     });
     setSelectedLeague(ref.id);
@@ -281,6 +362,35 @@ export default function App(){
     await updateDoc(doc(db, "leagueMatches", matchId), {
       winner: winnerName, margin: 0, status: "complete", resultsSeenBy: [], forfeit: true
     });
+    const lg = leagues.find(l => l.id === match.leagueId);
+    const lgName = lg?.name || "League";
+    await Promise.all([match.player1, match.player2].filter(Boolean).map(p =>
+      writeNotification(p, "match_forfeited", { matchId, leagueId: match.leagueId, leagueName: lgName, winner: winnerName, manual: true })
+    ));
+  }
+  // Extend a specific match's deadline. Pass additionalDays to push the
+  // existing deadline forward (or set it from now if none exists). Pass null
+  // to clear any override and revert to the league's weekly schedule.
+  async function extendMatchDeadline(matchId, additionalDays) {
+    const match = leagueMatches.find(m => m.id === matchId);
+    if (!match) return;
+    const lg = _assertCreator(match.leagueId);
+    if (additionalDays == null) {
+      await updateDoc(doc(db, "leagueMatches", matchId), { deadlineOverride: null });
+      return;
+    }
+    const dayMs = 86_400_000;
+    const weekStart = (lg.startedAt || Date.now()) + (match.round - 1) * 7 * dayMs;
+    const baseDeadline = lg.weeklyDeadlineDays
+      ? weekStart + lg.weeklyDeadlineDays * dayMs
+      : Date.now();
+    const current = match.deadlineOverride || baseDeadline;
+    const next = Math.max(Date.now(), current) + Number(additionalDays) * dayMs;
+    await updateDoc(doc(db, "leagueMatches", matchId), { deadlineOverride: next });
+    // Notify both finalists they got extra time.
+    await Promise.all([match.player1, match.player2].filter(Boolean).map(p =>
+      writeNotification(p, "deadline_extended", { matchId, leagueId: match.leagueId, leagueName: lg.name, newDeadline: next, days: Number(additionalDays) })
+    ));
   }
   // Per-league handicap override map. Set value to null to clear an override.
   async function setLeagueHandicap(leagueId, playerName, value) {
@@ -289,6 +399,85 @@ export default function App(){
     if (value == null || value === "" || Number.isNaN(value)) delete next[playerName];
     else next[playerName] = Number(value);
     await updateDoc(doc(db, "leagues", leagueId), { handicaps: next });
+  }
+
+  // ─── PLAYER MANAGEMENT (regular season only) ────────────
+  // Replace one player with another. Pending matches are re-pointed to the
+  // new player; completed matches stay attributed to the original. Handicap
+  // and nickname overrides transfer.
+  async function replacePlayer(leagueId, oldName, newName) {
+    const lg = _assertCreator(leagueId);
+    if (lg.status !== "active") { alert("Replace only allowed during regular season."); return; }
+    if (!oldName || !newName || oldName === newName) return;
+    if (lg.players?.includes(newName)) { alert(`${newName} is already in this league.`); return; }
+    const players = (lg.players || []).map(p => p === oldName ? newName : p);
+    const handicaps = { ...(lg.handicaps || {}) };
+    if (handicaps[oldName] != null) { handicaps[newName] = handicaps[oldName]; delete handicaps[oldName]; }
+    const nicknames = { ...(lg.nicknames || {}) };
+    if (nicknames[oldName]) { nicknames[newName] = nicknames[oldName]; delete nicknames[oldName]; }
+    await updateDoc(doc(db, "leagues", leagueId), { players, handicaps, nicknames });
+    const pending = leagueMatches.filter(m => m.leagueId === leagueId && m.status !== "complete" && (m.player1 === oldName || m.player2 === oldName));
+    await Promise.all(pending.map(m => {
+      const u = {};
+      if (m.player1 === oldName) u.player1 = newName;
+      if (m.player2 === oldName) u.player2 = newName;
+      return updateDoc(doc(db, "leagueMatches", m.id), u);
+    }));
+    await writeNotification(newName, "league_invite", { leagueId, leagueName: lg.name, replaces: oldName });
+  }
+
+  // Add a new player mid-season. Their catch-up matches against existing
+  // players are appended as new regular rounds at the end of the schedule.
+  async function addPlayerMidSeason(leagueId, newName) {
+    const lg = _assertCreator(leagueId);
+    if (lg.status !== "active") { alert("Add only allowed during regular season."); return; }
+    if (!newName || lg.players?.includes(newName)) { alert(`${newName} is already in this league.`); return; }
+    if ((lg.players?.length || 0) >= MAX_LEAGUE_PLAYERS) { alert(`League already at max ${MAX_LEAGUE_PLAYERS} players.`); return; }
+    const existing = lg.players || [];
+    const players = [...existing, newName];
+    // One catch-up match per existing player. Append each as a new round so
+    // the schedule view groups them together.
+    const startRound = (lg.totalRounds || 0) + 1;
+    const writes = existing.map((opp, i) => addDoc(collection(db, "leagueMatches"), {
+      leagueId, round: startRound + i, matchNum: 1, roundType: "regular",
+      player1: newName, player2: opp,
+      course: null, p1Total: null, p2Total: null, p1Par: null, p2Par: null,
+      p1Scores: null, p2Scores: null,
+      winner: null, margin: null, status: "pending", catchUp: true,
+      createdAt: Date.now()
+    }));
+    await Promise.all(writes);
+    await updateDoc(doc(db, "leagues", leagueId), {
+      players, totalRounds: startRound + existing.length - 1
+    });
+    await writeNotification(newName, "league_invite", { leagueId, leagueName: lg.name });
+    await Promise.all(existing.map(p =>
+      writeNotification(p, "player_added", { leagueId, leagueName: lg.name, newPlayer: newName })
+    ));
+  }
+
+  // Remove a player. Policy: "forfeit" = pending matches go to the opponent,
+  // "void" = pending matches are deleted entirely.
+  async function removePlayerMidSeason(leagueId, name, policy = "forfeit") {
+    const lg = _assertCreator(leagueId);
+    if (lg.status !== "active") { alert("Remove only allowed during regular season."); return; }
+    if (!lg.players?.includes(name)) return;
+    const players = (lg.players || []).filter(p => p !== name);
+    const handicaps = { ...(lg.handicaps || {}) }; delete handicaps[name];
+    const nicknames = { ...(lg.nicknames || {}) }; delete nicknames[name];
+    const withdrawn = [...(lg.withdrawn || []), name];
+    await updateDoc(doc(db, "leagues", leagueId), { players, handicaps, nicknames, withdrawn });
+    const pending = leagueMatches.filter(m => m.leagueId === leagueId && m.status !== "complete" && (m.player1 === name || m.player2 === name));
+    await Promise.all(pending.map(m => {
+      if (policy === "void") return deleteDoc(doc(db, "leagueMatches", m.id));
+      const opponent = m.player1 === name ? m.player2 : m.player1;
+      return updateDoc(doc(db, "leagueMatches", m.id), {
+        winner: opponent || null, margin: 0, status: "complete", forfeit: true, resultsSeenBy: []
+      });
+    }));
+    await Promise.all(players.map(p =>
+      writeNotification(p, "player_removed", { leagueId, leagueName: lg.name, removedPlayer: name, policy })
+    ));
   }
 
   async function joinLeagueByCode(code) {
@@ -337,10 +526,11 @@ export default function App(){
     await Promise.all(writes);
     // Persist effectivePlayoffSize so we can short-circuit to "complete" if
     // the creator chose "no playoffs" — checkLeagueProgress reads this back.
+    // Record startedAt for the deadline checker.
     await updateDoc(doc(db,"leagues",leagueId), {
       status: "active", totalRounds: schedule.length, currentRound: 1,
       playoffSize: lg.playoffSizeOverride != null ? lg.playoffSizeOverride : fmt.playoffSize,
-      formatName: fmt.name
+      formatName: fmt.name, startedAt: Date.now()
     });
   }
 
@@ -540,7 +730,29 @@ export default function App(){
             else{updates.winner="Tie";updates.margin=0;}
           }else{updates.status="in-progress";}
           await updateDoc(doc(db,"leagueMatches",match.id),updates);
-          if(updates.status==="complete"){await checkLeagueProgress(match.leagueId);}
+          // ─── NOTIFICATIONS for this match save ───
+          // If the match is now complete, notify the opponent ("results
+          // unlocked"). If it's still in-progress, notify the opponent that
+          // it's their turn.
+          if(updates.status==="complete"){
+            await checkLeagueProgress(match.leagueId);
+            const lgName=lg?.name||"League";
+            await Promise.all([match.player1, match.player2].filter(Boolean).map(p =>
+              writeNotification(p, "results_unlocked", { matchId: match.id, leagueId: match.leagueId, leagueName: lgName, roundType: match.roundType })
+            ));
+          } else if(updates.status==="in-progress"){
+            // The player(s) who just played are the ones in playersToWrite.
+            // Notify the OTHER finalist if they haven't played yet.
+            const lgName=lg?.name||"League";
+            const p1Just = playersToWrite.includes(match.player1);
+            const p2Just = playersToWrite.includes(match.player2);
+            if(p1Just && match.player2 && match.p2Total == null) {
+              await writeNotification(match.player2, "your_turn", { matchId: match.id, leagueId: match.leagueId, leagueName: lgName, opponent: match.player1, roundType: match.roundType });
+            }
+            if(p2Just && match.player1 && match.p1Total == null) {
+              await writeNotification(match.player1, "your_turn", { matchId: match.id, leagueId: match.leagueId, leagueName: lgName, opponent: match.player2, roundType: match.roundType });
+            }
+          }
         }
       }
     }
@@ -569,6 +781,15 @@ export default function App(){
         const dest = activeTourney ? "home" : activeLeagueMatch ? "league" : "leaderboard";
         setNewRecordInfo({ player: best.player, course: courseName, newScore: best.total, newPar: totalPar, oldRecord: old || null, navigateTo: dest });
         recordBroken = true;
+        // Notify everyone who's played this course (other than the recorder)
+        // that the record was broken. Distinct, unsealed players only.
+        const recipients = [...new Set(rounds
+          .filter(r => r.course === courseName && r.player !== best.player && !isRoundSealed(r, leagueMatches, me))
+          .map(r => r.player)
+        )];
+        await Promise.all(recipients.map(p =>
+          writeNotification(p, "course_record", { course: courseName, player: best.player, score: best.total, par: totalPar, oldScore: old?.total || null })
+        ));
       }
     }
 
@@ -613,6 +834,9 @@ export default function App(){
       // No playoffs: league completes immediately after the regular season.
       if(ps===0){
         await updateDoc(doc(db,"leagues",leagueId),{status:"complete"});
+        await Promise.all((lg.players||[]).map(p =>
+          writeNotification(p, "season_complete", { leagueId, leagueName: lg.name })
+        ));
         return;
       }
       const seeds=sorted.slice(0,ps);
@@ -622,6 +846,10 @@ export default function App(){
       });
       await Promise.all(matches.map(m=>addDoc(collection(db,"leagueMatches"),{...m,createdAt:Date.now()})));
       await updateDoc(doc(db,"leagues",leagueId),{status:"playoffs"});
+      // Notify every player in the league.
+      await Promise.all((lg.players||[]).map(p =>
+        writeNotification(p, "playoffs_created", { leagueId, leagueName: lg.name })
+      ));
     }
   }
 
@@ -812,18 +1040,28 @@ export default function App(){
     <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Segoe UI',system-ui,sans-serif",color:C.text}}>
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}} @keyframes hioGlow{0%{text-shadow:0 0 10px #ff6b00}50%{text-shadow:0 0 30px #ff6b00,0 0 60px #ff4400}100%{text-shadow:0 0 10px #ff6b00}} @keyframes champGlow{0%{box-shadow:0 0 20px rgba(212,184,74,0.3)}50%{box-shadow:0 0 40px rgba(212,184,74,0.6)}100%{box-shadow:0 0 20px rgba(212,184,74,0.3)}} @keyframes fadeIn{0%{opacity:0;transform:scale(0.95)}100%{opacity:1;transform:scale(1)}}`}</style>
       {/* HEADER */}
-      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{activeLeagueMatch?.isChampionship?"SEASON 1 FINALS":"LEAGUE TRACKER"}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={()=>{setMe("");try{localStorage.removeItem("sg-me");}catch(e){}}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Switch</button></div></div>
+      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{activeLeagueMatch?.isChampionship?"SEASON 1 FINALS":"LEAGUE TRACKER"}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}{me&&(()=>{const unread=notifications.filter(n=>!n.read).length;return <button onClick={()=>setShowNotifications(true)} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,position:"relative",padding:"2px 4px",lineHeight:1}}>🔔{unread>0&&<span style={{position:"absolute",top:-2,right:-4,background:C.red,color:"#fff",fontSize:9,fontWeight:700,minWidth:14,height:14,borderRadius:7,padding:"0 3px",display:"flex",alignItems:"center",justifyContent:"center"}}>{unread>9?"9+":unread}</span>}</button>;})()}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={()=>{setMe("");try{localStorage.removeItem("sg-me");}catch(e){}}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Switch</button></div></div>
       {/* TABS */}
       <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`}}>{[["home","Home"],["courses","Courses"],["play","Play"],["league","League"],["leaderboard","Board"],["stats","Stats"]].map(([k,l])=>(<button key={k} onClick={()=>{setTab(k);if(k==="courses")setCreating(false);if(k!=="home")setShowTourney(false);}} style={{flex:1,padding:"11px 4px",background:tab===k?C.accent:"transparent",color:tab===k?C.white:C.muted,border:"none",cursor:"pointer",fontSize:11,fontWeight:tab===k?700:400,borderBottom:tab===k?`2px solid ${C.greenLt}`:"2px solid transparent"}}>{l}</button>))}</div>
 
       <div style={{maxWidth:600,margin:"0 auto",padding:16}}>
         {tab==="home"&&<HomeTab me={me} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults} openRoundDetail={openRoundDetail}/>}
-        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} updateLeagueConfig={updateLeagueConfig} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile} renameLeague={renameLeague} swapWeekCourse={swapWeekCourse} setMatchCourse={setMatchCourse} resetMatch={resetMatch} forfeitMatch={forfeitMatch} setLeagueHandicap={setLeagueHandicap}/>}
+        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} updateLeagueConfig={updateLeagueConfig} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile} renameLeague={renameLeague} swapWeekCourse={swapWeekCourse} setMatchCourse={setMatchCourse} resetMatch={resetMatch} forfeitMatch={forfeitMatch} setLeagueHandicap={setLeagueHandicap} extendMatchDeadline={extendMatchDeadline} replacePlayer={replacePlayer} addPlayerMidSeason={addPlayerMidSeason} removePlayerMidSeason={removePlayerMidSeason}/>}
         {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords} rounds={rounds} leagueMatches={leagueMatches} me={me}/>}
         {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell} holeCount={holeCount} setHoleCount={setHoleCount} nineType={nineType} setNineType={setNineType} activeLeagueMatch={activeLeagueMatch}/></>}
         {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
         {tab==="stats"&&<StatsTab playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
       </div>
+
+      {showNotifications && <NotificationsPanel
+        notifications={notifications}
+        onClose={()=>setShowNotifications(false)}
+        markRead={markNotificationRead}
+        markAllRead={markAllNotificationsRead}
+        deleteNotification={deleteNotification}
+        setTab={setTab}
+        setSelectedLeague={setSelectedLeague}
+      />}
 
       <RoundDetailOverlay
         detailRound={detailRound} editingRound={editingRound} editScores={editScores}
