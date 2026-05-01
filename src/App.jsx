@@ -211,6 +211,72 @@ export default function App(){
     await updateDoc(doc(db, "leagues", leagueId), patch);
   }
 
+  // ─── CREATOR IN-SEASON EDITS ────────────────────────────
+  // All require: caller is the league creator. UI gates on this too but we
+  // double-check here since these mutate other players' state.
+  function _assertCreator(leagueId) {
+    const lg = leagues.find(l => l.id === leagueId);
+    if (!lg) throw new Error("League not found");
+    if (lg.creator !== me) throw new Error("Only the creator can edit this league");
+    return lg;
+  }
+  async function renameLeague(leagueId, newName) {
+    _assertCreator(leagueId);
+    const trimmed = (newName || "").trim();
+    if (!trimmed) return;
+    await updateDoc(doc(db, "leagues", leagueId), { name: trimmed });
+  }
+  // Swap a single week's course. Updates every pending match in that week
+  // and the league's coursesByRound entry. Played matches keep their course.
+  async function swapWeekCourse(leagueId, weekIdx, courseName) {
+    const lg = _assertCreator(leagueId);
+    const next = [...(lg.coursesByRound || [])];
+    next[weekIdx] = courseName || null;
+    await updateDoc(doc(db, "leagues", leagueId), { coursesByRound: next });
+    const round = weekIdx + 1;
+    const pending = leagueMatches.filter(m => m.leagueId === leagueId && m.round === round && m.status !== "complete");
+    await Promise.all(pending.map(m => updateDoc(doc(db, "leagueMatches", m.id), { course: courseName || null })));
+  }
+  async function setMatchCourse(matchId, courseName) {
+    const match = leagueMatches.find(m => m.id === matchId);
+    if (!match) return;
+    _assertCreator(match.leagueId);
+    if (match.status === "complete") { alert("Can't change course on a completed match — reset it first."); return; }
+    await updateDoc(doc(db, "leagueMatches", matchId), { course: courseName || null });
+  }
+  // Reset a completed match back to pending so players can re-record. Note:
+  // does not retroactively undo any playoff matches that were created from
+  // the completion of regular-season play. The creator should handle that
+  // separately if needed.
+  async function resetMatch(matchId) {
+    const match = leagueMatches.find(m => m.id === matchId);
+    if (!match) return;
+    _assertCreator(match.leagueId);
+    await updateDoc(doc(db, "leagueMatches", matchId), {
+      p1Total: null, p2Total: null, p1Par: null, p2Par: null,
+      p1Scores: null, p2Scores: null,
+      winner: null, margin: null, status: "pending", resultsSeenBy: []
+    });
+  }
+  // Forfeit / declare winner without play. Sets margin to 0 since no scores.
+  async function forfeitMatch(matchId, winnerName) {
+    const match = leagueMatches.find(m => m.id === matchId);
+    if (!match) return;
+    _assertCreator(match.leagueId);
+    if (winnerName !== match.player1 && winnerName !== match.player2 && winnerName !== "Tie") return;
+    await updateDoc(doc(db, "leagueMatches", matchId), {
+      winner: winnerName, margin: 0, status: "complete", resultsSeenBy: [], forfeit: true
+    });
+  }
+  // Per-league handicap override map. Set value to null to clear an override.
+  async function setLeagueHandicap(leagueId, playerName, value) {
+    const lg = _assertCreator(leagueId);
+    const next = { ...(lg.handicaps || {}) };
+    if (value == null || value === "" || Number.isNaN(value)) delete next[playerName];
+    else next[playerName] = Number(value);
+    await updateDoc(doc(db, "leagues", leagueId), { handicaps: next });
+  }
+
   async function joinLeagueByCode(code) {
     const q2 = query(collection(db,"leagues"), where("code","==",code.toUpperCase()));
     const snap = await getDocs(q2);
@@ -702,7 +768,7 @@ export default function App(){
 
       <div style={{maxWidth:600,margin:"0 auto",padding:16}}>
         {tab==="home"&&<HomeTab me={me} rounds={rounds} allCourses={allCourses} playerNames={playerNames} pgaThisWeek={pgaThisWeek} showTourney={showTourney} setShowTourney={setShowTourney} showJoin={showJoin} setShowJoin={setShowJoin} joinInput={joinInput} setJoinInput={setJoinInput} joinLive={joinLive} setTab={setTab} setCreating={setCreating} handleGenerate={handleGenerate} iMeJoined={iMeJoined} tJoined={tJoined} curTE={curTE} tEntries={tEntries} tPar={tPar} myTRnds={myTRnds} myNextRd={myNextRd} tBoard={tBoard} tShowAdj={tShowAdj} setTShowAdj={setTShowAdj} myTHdcp={myTHdcp} setMyTHdcp={setMyTHdcp} joinTourney={joinTourney} updateMyTourneyHdcp={updateMyTourneyHdcp} playTourneyRound={playTourneyRound} playCasualPGA={playCasualPGA} leagueMatches={leagueMatches} revealMatchResults={revealMatchResults} openRoundDetail={openRoundDetail}/>}
-        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} updateLeagueConfig={updateLeagueConfig} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile}/>}
+        {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} updateLeagueConfig={updateLeagueConfig} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile} renameLeague={renameLeague} swapWeekCourse={swapWeekCourse} setMatchCourse={setMatchCourse} resetMatch={resetMatch} forfeitMatch={forfeitMatch} setLeagueHandicap={setLeagueHandicap}/>}
         {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords} rounds={rounds} leagueMatches={leagueMatches} me={me}/>}
         {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell} holeCount={holeCount} setHoleCount={setHoleCount} nineType={nineType} setNineType={setNineType} activeLeagueMatch={activeLeagueMatch}/></>}
         {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
