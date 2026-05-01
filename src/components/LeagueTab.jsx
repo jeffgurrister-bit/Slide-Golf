@@ -25,8 +25,11 @@ export default function LeagueTab({
   // rounds in Firestore (matchType === "championship", Nebraska, both finalists).
   const s1FinalRaw = S1_PLAYOFFS.find(g => g[4] === "F");
   const s1FinalP1 = s1FinalRaw?.[5], s1FinalP2 = s1FinalRaw?.[7];
+  // Accept either an explicit championship tag OR a hidden round at Nebraska
+  // (covers cases where one finalist joined via live-round code and saved
+  // without the matchType tag set).
   const champRoundFor = (name) => (rounds || [])
-    .filter(r => r.player === name && r.matchType === "championship" && r.course === "Nebraska")
+    .filter(r => r.player === name && r.course === "Nebraska" && (r.matchType === "championship" || r.hidden))
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
   const p1ChampRd = s1FinalP1 && champRoundFor(s1FinalP1);
   const p2ChampRd = s1FinalP2 && champRoundFor(s1FinalP2);
