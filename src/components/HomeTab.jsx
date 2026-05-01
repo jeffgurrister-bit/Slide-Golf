@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { C, btnS, inputS } from "../utils/theme.js";
-import { RelPar, countHIO, isRoundSealed, effectiveMatchType, isRoundHiddenForDisplay } from "../utils/helpers.jsx";
+import { RelPar, countHIO, isRoundSealed, effectiveMatchType, isRoundHiddenForDisplay, championshipFingerprints, roundHoleCount } from "../utils/helpers.jsx";
 
 export default function HomeTab({
-  me, players, rounds, allCourses, playerNames, pgaThisWeek,
+  me, rounds, allCourses, playerNames, pgaThisWeek,
   showTourney, setShowTourney, showJoin, setShowJoin, joinInput, setJoinInput, joinLive,
   setTab, setCreating, handleGenerate, iMeJoined, tJoined,
   // Tournament panel props
@@ -14,6 +14,9 @@ export default function HomeTab({
   openRoundDetail
 }) {
   const tId = pgaThisWeek?.start;
+  // revealedMatch holds a frozen copy of the match so the celebration card
+  // doesn't unmount when revealMatchResults writes resultsSeenBy and the
+  // pendingReveals derivation drops it.
   const [revealedMatch, setRevealedMatch] = useState(null);
   const [revealPhase, setRevealPhase] = useState(null);
 
@@ -23,6 +26,11 @@ export default function HomeTab({
     (m.player1 === me || m.player2 === me) &&
     !(m.resultsSeenBy || []).includes(me)
   );
+  // Render the frozen revealed match alongside still-pending ones, deduped
+  // by id (so the just-revealed one keeps showing while we animate).
+  const reveals = revealedMatch
+    ? [revealedMatch, ...pendingReveals.filter(m => m.id !== revealedMatch.id)]
+    : pendingReveals;
 
   if (showTourney && pgaThisWeek) return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -49,21 +57,19 @@ export default function HomeTab({
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       {/* Match Reveal Cards */}
-      {pendingReveals.map(m => {
+      {reveals.map(m => {
         const opp = m.player1 === me ? m.player2 : m.player1;
-        const isRevealing = revealedMatch === m.id;
+        const isRevealing = revealedMatch?.id === m.id;
 
         if (isRevealing && revealPhase === "shown") {
-          const myScore = m.player1 === me ? m.p1Total : m.p2Total;
-          const oppScore = m.player1 === me ? m.p2Total : m.p1Total;
           const iWon = m.winner === me;
           const isTie = m.winner === "Tie";
           return (
-            <div key={m.id} style={{
+            <div key={m.id} onClick={()=>{setRevealedMatch(null);setRevealPhase(null);}} style={{
               background: iWon ? "linear-gradient(135deg,#1a2a1a,#2a3a2a)" : isTie ? "linear-gradient(135deg,#2a2a1a,#3a3a2a)" : "linear-gradient(135deg,#2a1a1a,#3a2a2a)",
               borderRadius: 12, padding: 20,
               border: `2px solid ${iWon ? "#4abb4a" : isTie ? "#d4b84a" : "#ef4444"}`,
-              textAlign: "center", animation: "fadeIn 0.5s ease"
+              textAlign: "center", animation: "fadeIn 0.5s ease", cursor: "pointer"
             }}>
               <div style={{fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 2}}>
                 {m.roundType === "F" ? "🏆 Championship" : m.roundType === "SF" ? "Semifinal" : m.roundType === "QF" ? "Quarterfinal" : "League Match"}
@@ -83,6 +89,7 @@ export default function HomeTab({
               <div style={{marginTop: 12, fontSize: 14, fontWeight: 700, color: iWon ? "#4abb4a" : isTie ? C.gold : C.red}}>
                 {iWon ? `You win by ${m.margin}!` : isTie ? "It's a tie!" : `${m.winner} wins by ${m.margin}`}
               </div>
+              <div style={{marginTop: 10, fontSize: 10, color: C.muted}}>Tap to dismiss</div>
             </div>
           );
         }
@@ -92,11 +99,15 @@ export default function HomeTab({
             background: "linear-gradient(135deg,#1a2a4a,#2a3a5a)",
             borderRadius: 12, padding: 20,
             border: "2px solid #d4b84a", textAlign: "center", cursor: "pointer"
-          }} onClick={async () => {
-            setRevealedMatch(m.id);
+          }} onClick={() => {
+            setRevealedMatch(m);
             setRevealPhase("animating");
-            setTimeout(() => setRevealPhase("shown"), 800);
-            await revealMatchResults(m.id);
+            setTimeout(() => {
+              setRevealPhase("shown");
+              // Write resultsSeenBy AFTER the animation lands so the card
+              // doesn't unmount mid-transition when the snapshot fires.
+              revealMatchResults(m.id);
+            }, 800);
           }}>
             <div style={{fontSize: 24}}>🏆</div>
             <div style={{fontSize: 16, fontWeight: 700, color: "#d4b84a", marginTop: 8}}>Match Results Are In!</div>
@@ -122,7 +133,7 @@ export default function HomeTab({
       <button onClick={()=>setTab("league")} style={{...btnS(false),padding:14,fontSize:14,width:"100%",background:"linear-gradient(135deg,#2a1a1a,#3a2a1a)",border:"1px solid #5a4a2a",color:C.gold}}>🏆 League — Season 1</button>
       <button onClick={()=>setTab("leaderboard")} style={{...btnS(false),padding:14,fontSize:14,width:"100%"}}>📊 Leaderboard</button>
       <div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:10}}>Quick Stats</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>{[[playerNames.length,"Players"],[rounds.length,"Rounds"],[allCourses.length,"Courses"]].map(([v,l])=>(<div key={l} style={{textAlign:"center"}}><div style={{fontSize:22,fontWeight:700,color:C.greenLt}}>{v}</div><div style={{fontSize:10,color:C.muted}}>{l}</div></div>))}</div></div>
-      {rounds.length>0&&<div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8}}>Recent Rounds</div>{rounds.slice(0,5).map(r=>{const hio=r.holeInOnes||countHIO(r.scores)||0;const sealed=isRoundSealed(r,leagueMatches,me);const hidden=isRoundHiddenForDisplay(r,leagueMatches,rounds,me);const hc=r.holeCount||r.holesPlayed||18;const lvl=r.courseLevel;const lvlColor=lvl==="Easy"?"#22c55e":lvl==="Medium"?"#3b82f6":lvl==="Hard"?"#f59e0b":"#ef4444";const mt=effectiveMatchType(r);const matchTag=mt==="championship"?"🏆":mt==="playoff"?"⚡PO":mt==="league"?"⚡":mt==="pga"?"📺":null;const matchColor=mt==="championship"?C.gold:mt==="pga"?C.blue:C.greenLt;return<div key={r.id} onClick={()=>openRoundDetail(r)} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:13,cursor:"pointer"}}><div><span style={{fontWeight:600}}>{r.player}</span><span style={{color:C.muted,fontSize:11,marginLeft:8}}>{r.course}</span>{lvl&&<span style={{fontSize:8,fontWeight:700,color:lvlColor,marginLeft:4}}>{lvl}</span>}{matchTag&&<span style={{fontSize:8,color:matchColor,marginLeft:3}}>{matchTag}</span>}{hc===9&&<span style={{color:C.blue,fontSize:9,marginLeft:4}}>9H</span>}</div><div style={{display:"flex",gap:6,alignItems:"center"}}>{sealed?<span style={{color:C.muted,fontSize:11}}>🔒 Sealed</span>:hidden?<span style={{color:C.muted,fontSize:11}}>🙈</span>:<><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></>}{!sealed&&hio>0&&<span style={{fontSize:10,color:"#ff6b00"}}>🎯{hio}</span>}</div></div>;})}</div>}
+      {rounds.length>0&&(()=>{const champFps=championshipFingerprints(leagueMatches);return <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}><div style={{fontWeight:600,marginBottom:8}}>Recent Rounds</div>{rounds.slice(0,5).map(r=>{const hio=r.holeInOnes||countHIO(r.scores)||0;const sealed=isRoundSealed(r,leagueMatches,me);const hidden=isRoundHiddenForDisplay(r,leagueMatches,rounds,me,champFps);const hc=roundHoleCount(r);const lvl=r.courseLevel;const lvlColor=lvl==="Easy"?"#22c55e":lvl==="Medium"?"#3b82f6":lvl==="Hard"?"#f59e0b":"#ef4444";const mt=effectiveMatchType(r,champFps);const matchTag=mt==="championship"?"🏆":mt==="playoff"?"⚡PO":mt==="league"?"⚡":mt==="pga"?"📺":null;const matchColor=mt==="championship"?C.gold:mt==="pga"?C.blue:C.greenLt;return<div key={r.id} onClick={()=>openRoundDetail(r)} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:13,cursor:"pointer"}}><div><span style={{fontWeight:600}}>{r.player}</span><span style={{color:C.muted,fontSize:11,marginLeft:8}}>{r.course}</span>{lvl&&<span style={{fontSize:8,fontWeight:700,color:lvlColor,marginLeft:4}}>{lvl}</span>}{matchTag&&<span style={{fontSize:8,color:matchColor,marginLeft:3}}>{matchTag}</span>}{hc===9&&<span style={{color:C.blue,fontSize:9,marginLeft:4}}>9H</span>}</div><div style={{display:"flex",gap:6,alignItems:"center"}}>{sealed?<span style={{color:C.muted,fontSize:11}}>🔒 Sealed</span>:hidden?<span style={{color:C.muted,fontSize:11}}>🙈</span>:<><span style={{fontWeight:700}}>{r.total}</span><RelPar s={r.total} p={r.par}/></>}{!sealed&&hio>0&&<span style={{fontSize:10,color:"#ff6b00"}}>🎯{hio}</span>}</div></div>;})}</div>;})()}
     </div>
   );
 }

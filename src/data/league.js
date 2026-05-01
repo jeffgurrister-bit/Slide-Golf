@@ -21,6 +21,33 @@ export const LEAGUE_FORMATS = {
   10: { name: "10-Player League", playoffSize: 7, desc: "Round-robin → Top 7 playoffs (#1 seed bye)" },
 };
 
+// ─── PLAYOFF BRACKET BUILDER ────────────────────────────
+// Returns an array of leagueMatches doc shapes (without createdAt) for the
+// post-regular-season bracket. Caller is responsible for the actual addDoc
+// calls and timestamping.
+export function buildPlayoffMatches(leagueId, totalRounds, sortedSeeds, fmt) {
+  const ps = fmt.playoffSize;
+  const stub = { leagueId, course: null, p1Total: null, p2Total: null, p1Par: null, p2Par: null, p1Scores: null, p2Scores: null, winner: null, margin: null, status: "pending" };
+  const seed = i => sortedSeeds[i]?.player || null;
+  const matches = [];
+  if (ps <= 2) {
+    matches.push({ ...stub, round: totalRounds + 1, matchNum: 1, roundType: "F", player1: seed(0), player2: seed(1) });
+  } else if (ps <= 4) {
+    matches.push({ ...stub, round: totalRounds + 1, matchNum: 1, roundType: "SF", player1: seed(0), player2: seed(3) });
+    matches.push({ ...stub, round: totalRounds + 1, matchNum: 2, roundType: "SF", player1: seed(1), player2: seed(2) });
+    matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "F", player1: null, player2: null });
+  } else {
+    const qfPairs = ps >= 7
+      ? [[seed(4), seed(3)], [seed(1), seed(6)], [seed(2), seed(5)]]
+      : [[seed(2), seed(5)], [seed(3), seed(4)]];
+    qfPairs.forEach((pair, i) => matches.push({ ...stub, round: totalRounds + 1, matchNum: i + 1, roundType: "QF", player1: pair[0], player2: pair[1] }));
+    matches.push({ ...stub, round: totalRounds + 2, matchNum: 1, roundType: "SF", player1: seed(0), player2: null });
+    matches.push({ ...stub, round: totalRounds + 2, matchNum: 2, roundType: "SF", player1: ps >= 7 ? null : seed(1), player2: null });
+    matches.push({ ...stub, round: totalRounds + 3, matchNum: 1, roundType: "F", player1: null, player2: null });
+  }
+  return matches;
+}
+
 // ─── ROUND ROBIN SCHEDULE GENERATOR ────────────────────
 export function generateRRSchedule(players) {
   const list = [...players];
@@ -41,9 +68,15 @@ export function generateRRSchedule(players) {
 }
 
 // ─── COMPUTE STANDINGS ─────────────────────────────────
+// Sort tiebreakers: (1) points desc, (2) diff vs par asc, (3) head-to-head
+// record between the tied pair, (4) total score asc, (5) name asc.
 export function computeStandings(players, matches) {
   const stats = {};
-  players.forEach(p => { stats[p] = { player: p, pts: 0, w: 0, l: 0, t: 0, gp: 0, totalScore: 0, totalPar: 0 }; });
+  const h2h = {}; // h2h[a][b] = wins by a over b
+  players.forEach(p => {
+    stats[p] = { player: p, pts: 0, w: 0, l: 0, t: 0, gp: 0, totalScore: 0, totalPar: 0 };
+    h2h[p] = {};
+  });
   matches.forEach(m => {
     if (m.status !== "complete" || m.roundType !== "regular") return;
     const { player1: p1, player2: p2 } = m;
@@ -51,11 +84,24 @@ export function computeStandings(players, matches) {
     stats[p1].gp++; stats[p2].gp++;
     stats[p1].totalScore += (m.p1Total || 0); stats[p2].totalScore += (m.p2Total || 0);
     stats[p1].totalPar += (m.p1Par || 0); stats[p2].totalPar += (m.p2Par || 0);
-    if (m.winner === p1) { stats[p1].pts += 2; stats[p1].w++; stats[p2].l++; }
-    else if (m.winner === p2) { stats[p2].pts += 2; stats[p2].w++; stats[p1].l++; }
-    else if (m.winner === "Tie") { stats[p1].pts++; stats[p2].pts++; stats[p1].t++; stats[p2].t++; }
+    if (m.winner === p1) {
+      stats[p1].pts += 2; stats[p1].w++; stats[p2].l++;
+      h2h[p1][p2] = (h2h[p1][p2] || 0) + 1;
+    } else if (m.winner === p2) {
+      stats[p2].pts += 2; stats[p2].w++; stats[p1].l++;
+      h2h[p2][p1] = (h2h[p2][p1] || 0) + 1;
+    } else if (m.winner === "Tie") {
+      stats[p1].pts++; stats[p2].pts++; stats[p1].t++; stats[p2].t++;
+    }
   });
   return Object.values(stats)
     .map(s => ({ ...s, diff: s.totalScore - s.totalPar, avg: s.gp ? Math.round(s.totalScore / s.gp * 10) / 10 : 0 }))
-    .sort((a, b) => b.pts - a.pts || (a.diff - b.diff));
+    .sort((a, b) => {
+      if (b.pts !== a.pts) return b.pts - a.pts;
+      if (a.diff !== b.diff) return a.diff - b.diff;
+      const aOverB = (h2h[a.player]?.[b.player] || 0) - (h2h[b.player]?.[a.player] || 0);
+      if (aOverB !== 0) return -aOverB; // more wins → lower index
+      if (a.totalScore !== b.totalScore) return a.totalScore - b.totalScore;
+      return a.player.localeCompare(b.player);
+    });
 }

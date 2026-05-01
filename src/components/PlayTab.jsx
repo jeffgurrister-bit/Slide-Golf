@@ -20,8 +20,6 @@ export default function PlayTab({
   // 9-hole
   holeCount, setHoleCount, nineType, setNineType, activeLeagueMatch
 }) {
-  const curPlayer = roundPlayers[curPlayerIdx];
-  const curHS = holeState[curPlayer];
   const curHD = selCourse?.holes[curHole];
 
   // Auto-flip from front 9 to back 9 in quick score (18-hole only)

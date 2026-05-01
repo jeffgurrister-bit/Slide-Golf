@@ -1,14 +1,15 @@
+import { useState } from "react";
 import { C, btnS, inputS, smallInput } from "../utils/theme.js";
-import { calcPar, fmtRange, fmtR } from "../utils/helpers.jsx";
+import { calcPar, fmtRange, fmtR, computeCourseStats } from "../utils/helpers.jsx";
 
 export default function CoursesTab({
   allCourses, creating, setCreating, startRound, deleteCourseFromDB, handleGenerate,
   // Creator state
   ccName, setCcName, ccLevel, setCcLevel, ccTournament, setCcTournament,
   ccHoles, setCcHolePar, setCcHoleRange, ccNine, setCcNine, saveCreatedCourse, resetCreator,
-  // Feature 2
-  courseRecords
+  courseRecords, rounds, leagueMatches, me
 }) {
+  const [statsOpen, setStatsOpen] = useState({});
   if (creating) return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{margin:0,fontSize:18}}>✏️ Create Course</h2><button onClick={()=>setCreating(false)} style={{...btnS(false),padding:"4px 10px",fontSize:11}}>Cancel</button></div>
@@ -23,16 +24,23 @@ export default function CoursesTab({
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}><h2 style={{margin:0,fontSize:18}}>Courses</h2><div style={{display:"flex",gap:4,flexWrap:"wrap"}}><button onClick={()=>{setCreating(true);resetCreator();}} style={{...btnS(true),padding:"5px 10px",fontSize:10}}>✏️ Create</button>{["Easy","Medium","Hard","Expert"].map(d=>(<button key={d} onClick={()=>handleGenerate(d)} style={{...btnS(false),padding:"5px 8px",fontSize:10,color:d==="Easy"?C.greenLt:d==="Medium"?C.gold:d==="Hard"?C.red:"#b48af8"}}>+{d}</button>))}</div></div>
-      {allCourses.map(c=>{const tp=c.holes.reduce((s,h)=>s+h.par,0);const rec=courseRecords?.[c.name];return<div key={c.id} style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{background:C.headerBg,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14,textTransform:"uppercase",letterSpacing:1}}>{c.name}</div>{c.tournament&&<div style={{fontSize:10,color:C.blue}}>{c.tournament}</div>}</div><span style={{background:c.level==="Hard"?"#6a2222":c.level==="Medium"?"#5a4a1a":c.level==="Expert"?"#4a2a6a":C.green,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600}}>{c.level}</span></div>
-        {/* Course Record (Feature 2) */}
+      {allCourses.map(c=>{const tp=c.holes.reduce((s,h)=>s+h.par,0);const rec=courseRecords?.[c.name];const open=statsOpen[c.name];const stats=open?computeCourseStats(c.name,rounds,leagueMatches,me):null;return<div key={c.id} style={{background:C.card,borderRadius:12,border:`1px solid ${C.border}`,overflow:"hidden"}}><div style={{background:C.headerBg,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,fontSize:14,textTransform:"uppercase",letterSpacing:1}}>{c.name}</div>{c.tournament&&<div style={{fontSize:10,color:C.blue}}>{c.tournament}</div>}</div><span style={{background:c.level==="Hard"?"#6a2222":c.level==="Medium"?"#5a4a1a":c.level==="Expert"?"#4a2a6a":C.green,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600}}>{c.level}</span></div>
         {rec && (
           <div style={{padding:"6px 14px",background:"rgba(212,184,74,0.06)",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
             <span style={{color:C.gold}}>🏆 Course Record</span>
             <span><strong style={{color:"#fff"}}>{rec.total}</strong><span style={{color:C.muted,marginLeft:6}}>— {rec.player}</span></span>
           </div>
         )}
-        <div style={{padding:10,overflowX:"auto"}}>{[0,9].map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:10,marginBottom:start===0?4:0,minWidth:460}}><thead><tr style={{background:C.accent}}><th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,minWidth:44}}>HOLE</th>{c.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"4px 2px",textAlign:"center",minWidth:30}}>{h.num}</th>)}<th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:42}}>{start===0?"OUT":"IN"}</th>{start===9&&<th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:42}}>TOT</th>}</tr></thead><tbody><tr style={{background:C.card2}}><td style={{padding:"3px 6px",fontWeight:600,color:C.greenLt,fontSize:9}}>RANGE</td>{c.holes.slice(start,start+9).map(h=><td key={h.num} style={{padding:"2px 1px",textAlign:"center",fontSize:9,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:9,color:C.muted}}>{fmtRange(c.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontSize:9,color:C.muted}}>{fmtRange(c.holes,0,18)}</td>}</tr><tr><td style={{padding:"3px 6px",fontWeight:600}}>PAR</td>{c.holes.slice(start,start+9).map(h=><td key={h.num} style={{padding:"2px",textAlign:"center"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(c.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{tp}</td>}</tr></tbody></table>))}</div>
-        <div style={{padding:"6px 10px",borderTop:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between"}}>{c.generated?<button onClick={()=>deleteCourseFromDB(c.id)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:11}}>Remove</button>:<div/>}<button onClick={()=>startRound(c)} style={{...btnS(true),padding:"6px 14px",fontSize:11}}>Play</button></div></div>;})}
+        <div style={{padding:10,overflowX:"auto"}}>{[0,9].map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:10,marginBottom:start===0?4:0,minWidth:460}}><thead><tr style={{background:C.accent}}><th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,minWidth:44}}>HOLE</th>{c.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"4px 2px",textAlign:"center",minWidth:30}}>{h.num}</th>)}<th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:42}}>{start===0?"OUT":"IN"}</th>{start===9&&<th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:42}}>TOT</th>}</tr></thead><tbody><tr style={{background:C.card2}}><td style={{padding:"3px 6px",fontWeight:600,color:C.greenLt,fontSize:9}}>RANGE</td>{c.holes.slice(start,start+9).map(h=><td key={h.num} style={{padding:"2px 1px",textAlign:"center",fontSize:9,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:9,color:C.muted}}>{fmtRange(c.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontSize:9,color:C.muted}}>{fmtRange(c.holes,0,18)}</td>}</tr><tr><td style={{padding:"3px 6px",fontWeight:600}}>PAR</td>{c.holes.slice(start,start+9).map(h=><td key={h.num} style={{padding:"2px",textAlign:"center"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(c.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{tp}</td>}</tr>{open&&stats&&<><tr style={{background:C.card2}}><td style={{padding:"3px 6px",fontWeight:600,color:C.blue,fontSize:9}}>AVG</td>{c.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const a=stats.holeAvgs[idx];const d=stats.overUnderPerHole?.[idx];const color=d==null?C.muted:d<0?C.greenLt:d>0?"#ff6b6b":C.text;return<td key={h.num} style={{padding:"2px 1px",textAlign:"center",fontSize:9,color,fontWeight:600}}>{a==null?"—":a}</td>;})}<td style={{padding:"2px",textAlign:"center",fontSize:9,color:C.muted}}>—</td>{start===9&&<td style={{textAlign:"center",fontSize:9,color:C.blue,fontWeight:700}}>{stats.avg??"—"}</td>}</tr></>}</tbody></table>))}</div>
+        {open&&stats&&<div style={{padding:"6px 14px",background:C.card2,borderTop:`1px solid ${C.border}`,fontSize:11,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}><span style={{color:C.muted}}>{stats.rounds} round{stats.rounds!==1?"s":""}</span>{stats.hardestIdx!=null&&<span style={{color:"#ff6b6b"}}>Hardest: #{stats.hardestIdx+1}</span>}{stats.easiestIdx!=null&&<span style={{color:C.greenLt}}>Easiest: #{stats.easiestIdx+1}</span>}</div>}
+        {open&&!stats&&<div style={{padding:"8px 14px",background:C.card2,borderTop:`1px solid ${C.border}`,fontSize:11,color:C.muted,textAlign:"center"}}>No 18-hole rounds yet</div>}
+        <div style={{padding:"6px 10px",borderTop:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {c.generated?<button onClick={()=>deleteCourseFromDB(c.id)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:11}}>Remove</button>:<div/>}
+            <button onClick={()=>setStatsOpen(s=>({...s,[c.name]:!s[c.name]}))} style={{background:"transparent",border:"none",color:open?C.blue:C.muted,cursor:"pointer",fontSize:11}}>{open?"▾":"▸"} Stats</button>
+          </div>
+          <button onClick={()=>startRound(c)} style={{...btnS(true),padding:"6px 14px",fontSize:11}}>Play</button>
+        </div></div>;})}
     </div>
   );
 }

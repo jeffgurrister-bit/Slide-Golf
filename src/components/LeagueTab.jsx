@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { S1_STANDINGS, S1_RESULTS, S1_PLAYOFFS, LEAGUE_FORMATS, computeStandings } from "../data/league.js";
 import { C, btnS, inputS } from "../utils/theme.js";
+import { effectiveMatchType, championshipFingerprints } from "../utils/helpers.jsx";
 
 export default function LeagueTab({
   me, leagueView, setLeagueView, leagueRdFilter, setLeagueRdFilter,
@@ -12,8 +13,8 @@ export default function LeagueTab({
   const [showCreate, setShowCreate] = useState(false);
   const [showJoinCode, setShowJoinCode] = useState(false);
   const [newName, setNewName] = useState("");
-  const [newHdcp, setNewHdcp] = useState(false);
   const [joinCode, setJoinCode] = useState("");
+  const champFps = championshipFingerprints(leagueMatches);
 
   const myLeagues = (leagues || []).filter(lg => lg.players?.includes(me));
   const isSeason1 = selectedLeague === "s1" || (!selectedLeague && myLeagues.length === 0);
@@ -25,11 +26,10 @@ export default function LeagueTab({
   // rounds in Firestore (matchType === "championship", Nebraska, both finalists).
   const s1FinalRaw = S1_PLAYOFFS.find(g => g[4] === "F");
   const s1FinalP1 = s1FinalRaw?.[5], s1FinalP2 = s1FinalRaw?.[7];
-  // Accept either an explicit championship tag OR a hidden round at Nebraska
-  // (covers cases where one finalist joined via live-round code and saved
-  // without the matchType tag set).
+  // Accept any round whose effective matchType is "championship" — covers
+  // explicit tags AND the hidden-Nebraska fallback for legacy saves.
   const champRoundFor = (name) => (rounds || [])
-    .filter(r => r.player === name && r.course === "Nebraska" && (r.matchType === "championship" || r.hidden))
+    .filter(r => r.player === name && r.course === "Nebraska" && effectiveMatchType(r, champFps) === "championship")
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
   const p1ChampRd = s1FinalP1 && champRoundFor(s1FinalP1);
   const p2ChampRd = s1FinalP2 && champRoundFor(s1FinalP2);
@@ -179,8 +179,7 @@ export default function LeagueTab({
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{fontWeight:700,fontSize:15}}>Create New League</div><button onClick={()=>setShowCreate(false)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:16}}>✕</button></div>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         <div><div style={{fontSize:11,color:C.muted,marginBottom:4}}>League Name</div><input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="e.g. Season 2" style={inputS}/></div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:600,fontSize:13}}>📊 Handicaps</div><div style={{fontSize:10,color:C.muted}}>Adjusted scoring</div></div><button onClick={()=>setNewHdcp(h=>!h)} style={{width:48,height:26,borderRadius:13,border:"none",cursor:"pointer",position:"relative",background:newHdcp?C.greenLt:C.card2,transition:"all 0.2s"}}><div style={{width:20,height:20,borderRadius:10,background:C.white,position:"absolute",top:3,left:newHdcp?25:3,transition:"left 0.2s"}}/></button></div>
-        <button onClick={async()=>{if(!newName.trim())return;await createLeague(newName.trim(),newHdcp);setNewName("");setNewHdcp(false);setShowCreate(false);}} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
+        <button onClick={async()=>{if(!newName.trim())return;await createLeague(newName.trim(),false);setNewName("");setShowCreate(false);}} style={{...btnS(true),width:"100%",padding:12,fontSize:14}}>🏆 Create League</button>
         <div style={{fontSize:10,color:C.muted,textAlign:"center"}}>You'll get an invite code to share</div>
       </div>
     </div>}
