@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { db, auth } from "./firebase.js";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged, signOut, getRedirectResult } from "firebase/auth";
 import {
   collection, addDoc, deleteDoc, doc, onSnapshot, setDoc,
   query, orderBy, updateDoc, where, getDocs, getDoc, arrayUnion, arrayRemove
@@ -91,32 +91,48 @@ export default function App(){
   // player name via users/{uid} and stash it in `me`. When they sign out,
   // clear `me`. authReady flips true on first resolve so we don't flash
   // the auth screen before knowing if the user is signed in already.
+  // On iOS Safari, signInWithRedirect can leave Firebase in a state where
+  // it needs getRedirectResult() called to materialize the credential
+  // before onAuthStateChanged fires the signed-in user. We await that
+  // here BEFORE subscribing so the redirect doesn't dead-end into the
+  // sign-in screen.
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      setAuthUser(user);
-      if (!user) {
-        setMe("");
-        try { localStorage.removeItem("sg-me"); } catch (e) {}
-        setAuthReady(true);
-        return;
-      }
+    let unsub;
+    let mounted = true;
+    (async () => {
       try {
-        const userSnap = await getDoc(doc(db, "users", user.uid));
-        if (userSnap.exists()) {
-          const pn = userSnap.data().playerName || "";
-          setMe(pn);
-          try { localStorage.setItem("sg-me", pn); } catch (e) {}
-        } else {
-          // Auth user with no linked profile yet — this is normal for
-          // first-time Google sign-ins or any sign-up where the profile
-          // step failed. Leave `me` empty; AuthScreen will render the
-          // "complete your profile" flow because authUser is set.
+        await getRedirectResult(auth);
+      } catch (e) {
+        // Errors here are surfaced via onAuthStateChanged downstream —
+        // we just need the call to complete so any pending redirect is
+        // consumed.
+      }
+      if (!mounted) return;
+      unsub = onAuthStateChanged(auth, async (user) => {
+        setAuthUser(user);
+        if (!user) {
           setMe("");
+          try { localStorage.removeItem("sg-me"); } catch (e) {}
+          setAuthReady(true);
+          return;
         }
-      } catch (e) { /* swallow — try again next state change */ }
-      setAuthReady(true);
-    });
-    return () => unsub();
+        try {
+          const userSnap = await getDoc(doc(db, "users", user.uid));
+          if (userSnap.exists()) {
+            const pn = userSnap.data().playerName || "";
+            setMe(pn);
+            try { localStorage.setItem("sg-me", pn); } catch (e) {}
+          } else {
+            // Auth user with no linked profile yet — first-time Google
+            // sign-in or a sign-up that failed at the profile step.
+            // AuthScreen renders the "complete profile" flow.
+            setMe("");
+          }
+        } catch (e) { /* swallow — try again next state change */ }
+        setAuthReady(true);
+      });
+    })();
+    return () => { mounted = false; if (unsub) unsub(); };
   }, []);
 
   // ─── FIREBASE LISTENERS ────────────────────────────────
