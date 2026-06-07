@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { auth, db } from "../firebase.js";
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, signOut
+  sendPasswordResetEmail, GoogleAuthProvider,
+  signInWithPopup, signInWithRedirect, getRedirectResult, signOut
 } from "firebase/auth";
 import {
   collection, doc, setDoc, addDoc, updateDoc, getDoc
@@ -34,18 +35,44 @@ export default function AuthScreen({ players, authUser, onSignedIn }) {
   // If the user already signed in (e.g. via Google) but doesn't have a
   // linked players doc yet, we drop straight into the claim/create step.
   const needsProfile = !!authUser;
+  const [showEmail, setShowEmail] = useState(false);
 
   function reset() { setErr(""); setInfo(""); }
+
+  // Catch errors from a redirect-based sign-in flow when the user lands
+  // back on the page. Successful sign-ins come through onAuthStateChanged
+  // in App.jsx; we only need this to surface failures.
+  useEffect(() => {
+    (async () => {
+      try {
+        await getRedirectResult(auth);
+      } catch (e) {
+        setErr(authError(e));
+      }
+    })();
+  }, []);
+
+  // Detect mobile / in-app browsers where popups are unreliable. On these
+  // we use signInWithRedirect; on desktop we keep the snappier popup flow.
+  function isMobileLike() {
+    if (typeof window === "undefined") return false;
+    const ua = window.navigator.userAgent || "";
+    return /Mobi|Android|iPhone|iPad|iPod|FBAN|FBAV|Instagram/i.test(ua);
+  }
 
   async function handleGoogle() {
     reset();
     setBusy(true);
     try {
       const provider = new GoogleAuthProvider();
+      if (isMobileLike()) {
+        // Redirect flow — page navigates to Google, comes back signed in.
+        // No further code here runs; the result is picked up by
+        // onAuthStateChanged after the redirect completes.
+        await signInWithRedirect(auth, provider);
+        return;
+      }
       const cred = await signInWithPopup(auth, provider);
-      // If they already have a profile, App.jsx's auth listener will resolve
-      // it. If not, the parent re-renders AuthScreen with authUser set →
-      // needsProfile path takes over.
       onSignedIn?.(cred.user);
     } catch (e) {
       setErr(authError(e));
@@ -265,45 +292,56 @@ export default function AuthScreen({ players, authUser, onSignedIn }) {
           </button>
         )}
 
-        {mode !== "reset" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, color: C.muted, fontSize: 10 }}>
-            <div style={{ flex: 1, height: 1, background: C.border }} />
-            <span>OR EMAIL</span>
-            <div style={{ flex: 1, height: 1, background: C.border }} />
-          </div>
+        {/* Error from a redirect-based sign-in (no email card visible yet). */}
+        {!showEmail && err && (
+          <div style={{ background: "rgba(239,68,68,0.1)", border: `1px solid ${C.red}`, color: C.red, padding: "8px 10px", borderRadius: 6, fontSize: 12 }}>{err}</div>
         )}
 
-        <div style={{ background: C.card, borderRadius: 12, padding: 14, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 10 }}>
-          <div>
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Email</div>
-            <input value={email} onChange={e => setEmail(e.target.value)} type="email" autoComplete="email" placeholder="you@example.com" style={{ ...inputS, width: "100%" }} />
-          </div>
-          {mode !== "reset" && (
-            <div>
-              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Password</div>
-              <input value={password} onChange={e => setPassword(e.target.value)} type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} placeholder={mode === "signup" ? "min 6 chars" : ""} style={{ ...inputS, width: "100%" }} />
-            </div>
-          )}
-
-          {mode === "signup" && <ProfilePicker />}
-
-          {err && <div style={{ background: "rgba(239,68,68,0.1)", border: `1px solid ${C.red}`, color: C.red, padding: "8px 10px", borderRadius: 6, fontSize: 12 }}>{err}</div>}
-          {info && <div style={{ background: "rgba(74,170,74,0.1)", border: `1px solid ${C.greenLt}`, color: C.greenLt, padding: "8px 10px", borderRadius: 6, fontSize: 12 }}>{info}</div>}
-
-          <button
-            onClick={mode === "signin" ? handleSignIn : mode === "signup" ? handleSignUp : handleResetPassword}
-            disabled={busy}
-            style={{ ...btnS(true), padding: 12, fontSize: 14, opacity: busy ? 0.5 : 1, cursor: busy ? "not-allowed" : "pointer" }}
-          >
-            {busy ? "..." : mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
+        {/* Email/password card — hidden by default so the screen stays
+            clean for Google-only setups. Toggle reveals it. */}
+        {!showEmail && mode !== "reset" && (
+          <button onClick={() => { setShowEmail(true); reset(); }} style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", fontSize: 11, textAlign: "center", padding: "4px 0" }}>
+            Use email and password instead
           </button>
-        </div>
+        )}
 
-        <div style={{ display: "flex", justifyContent: "center", gap: 12, fontSize: 12 }}>
-          {mode !== "signin" && <button onClick={() => { setMode("signin"); reset(); }} style={{ background: "transparent", border: "none", color: C.greenLt, cursor: "pointer", fontSize: 12 }}>← Sign in</button>}
-          {mode === "signin" && <button onClick={() => { setMode("signup"); reset(); }} style={{ background: "transparent", border: "none", color: C.greenLt, cursor: "pointer", fontSize: 12 }}>Create an account</button>}
-          {mode === "signin" && <button onClick={() => { setMode("reset"); reset(); }} style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", fontSize: 12 }}>Forgot password?</button>}
-        </div>
+        {(showEmail || mode === "reset") && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, color: C.muted, fontSize: 10 }}>
+              <div style={{ flex: 1, height: 1, background: C.border }} />
+              <span>EMAIL</span>
+              <div style={{ flex: 1, height: 1, background: C.border }} />
+            </div>
+            <div style={{ background: C.card, borderRadius: 12, padding: 14, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Email</div>
+                <input value={email} onChange={e => setEmail(e.target.value)} type="email" autoComplete="email" placeholder="you@example.com" style={{ ...inputS, width: "100%" }} />
+              </div>
+              {mode !== "reset" && (
+                <div>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Password</div>
+                  <input value={password} onChange={e => setPassword(e.target.value)} type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} placeholder={mode === "signup" ? "min 6 chars" : ""} style={{ ...inputS, width: "100%" }} />
+                </div>
+              )}
+              {mode === "signup" && <ProfilePicker />}
+              {err && <div style={{ background: "rgba(239,68,68,0.1)", border: `1px solid ${C.red}`, color: C.red, padding: "8px 10px", borderRadius: 6, fontSize: 12 }}>{err}</div>}
+              {info && <div style={{ background: "rgba(74,170,74,0.1)", border: `1px solid ${C.greenLt}`, color: C.greenLt, padding: "8px 10px", borderRadius: 6, fontSize: 12 }}>{info}</div>}
+              <button
+                onClick={mode === "signin" ? handleSignIn : mode === "signup" ? handleSignUp : handleResetPassword}
+                disabled={busy}
+                style={{ ...btnS(true), padding: 12, fontSize: 14, opacity: busy ? 0.5 : 1, cursor: busy ? "not-allowed" : "pointer" }}
+              >
+                {busy ? "..." : mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
+              </button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "center", gap: 12, fontSize: 12 }}>
+              {mode !== "signin" && <button onClick={() => { setMode("signin"); reset(); }} style={{ background: "transparent", border: "none", color: C.greenLt, cursor: "pointer", fontSize: 12 }}>← Sign in</button>}
+              {mode === "signin" && <button onClick={() => { setMode("signup"); reset(); }} style={{ background: "transparent", border: "none", color: C.greenLt, cursor: "pointer", fontSize: 12 }}>Create an account</button>}
+              {mode === "signin" && <button onClick={() => { setMode("reset"); reset(); }} style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", fontSize: 12 }}>Forgot password?</button>}
+              <button onClick={() => { setShowEmail(false); reset(); }} style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", fontSize: 12 }}>Hide email</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
