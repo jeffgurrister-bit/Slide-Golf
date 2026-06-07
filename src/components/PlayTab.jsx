@@ -145,6 +145,33 @@ export default function PlayTab({
       {/* ═══ SHOT-BY-SHOT ═══ */}
       {selCourse&&playMode==="holes"&&curHD&&<>
         <LiveBadge/>
+        {(()=>{
+          // Compute per-player running total + ± par for everything they've
+          // actually scored so far on this round, so it's visible during play.
+          const totals = roundPlayers.map(p => {
+            const sc = allScores[p] || [];
+            const playedScores = sc.filter(v => v != null);
+            if (!playedScores.length || !selCourse) return null;
+            const tot = playedScores.reduce((s, v) => s + v, 0);
+            // Match par against the same holes the player has actually played
+            // — find which indices are non-null.
+            let parSoFar = 0;
+            sc.forEach((v, i) => { if (v != null && selCourse.holes[i]) parSoFar += selCourse.holes[i].par; });
+            return { p, tot, parSoFar, diff: tot - parSoFar };
+          }).filter(Boolean);
+          if (!totals.length) return null;
+          return (
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"center",fontSize:10,padding:"2px 0"}}>
+              {totals.map(({p, tot, parSoFar, diff}) => (
+                <div key={p} style={{background:C.card2,padding:"3px 8px",borderRadius:6,border:`1px solid ${C.border}`,display:"flex",gap:5,alignItems:"center"}}>
+                  <span style={{color:C.muted,fontSize:9}}>{p===me?"You":p}</span>
+                  <span style={{fontWeight:700}}>{tot}</span>
+                  <span style={{fontWeight:700,color:diff<0?C.greenLt:diff>0?C.red:C.muted}}>{diff===0?"E":diff>0?`+${diff}`:diff}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><h2 style={{margin:0,fontSize:16}}>Hole {curHole+1} <span style={{fontWeight:400,color:C.muted}}>of {holeCount===9?(nineType==="back"?"18":"9"):"18"}</span></h2><div style={{fontSize:11,color:C.muted}}>Par {curHD.par} · Range {fmtR(curHD.range)}{holeCount===9&&<span style={{color:C.blue,marginLeft:6}}>{nineType==="front"?"Front 9":"Back 9"}</span>}</div></div><button onClick={()=>setShowScorecard(s=>!s)} style={{...btnS(false),padding:"4px 10px",fontSize:11}}>📋</button></div>
         {showScorecard&&<ScorecardView/>}
         {roundPlayers.map((p,pIdx)=>{
