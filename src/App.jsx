@@ -804,7 +804,12 @@ export default function App(){
       const ps={...prev[player]};const hole=selCourse.holes[curHole];if(ps.done)return prev;
       if(value==="HOLEOUT"){ps.holeOut=true;ps.done=true;ps.score=ps.shots.filter(s=>s.type==="slide"||s.type==="OB").length+1;ps.shots.push({type:"holeout",val:"Hole Out!"});return{...prev,[player]:ps};}
       if(ps.onGreen){if(value==="MADE"){ps.putts+=1;ps.shots.push({type:"putt",val:"Made"});ps.done=true;ps.score=ps.shots.filter(s=>s.type==="slide"||s.type==="OB").length+ps.putts;}else{ps.putts+=1;ps.shots.push({type:"putt",val:"Miss"});}}
-      else{if(value==="OB"){ps.shots.push({type:"OB",val:0});}else{const num=parseInt(value);const isOver=ps.total>hole.range[1];if(isOver){ps.total-=num;ps.shots.push({type:"slide",val:num,dir:"sub"});}else{ps.total+=num;ps.shots.push({type:"slide",val:num,dir:"add"});}if(ps.total>=hole.range[0]&&ps.total<=hole.range[1])ps.onGreen=true;}}
+      else{if(value==="OB"){ps.shots.push({type:"OB",val:0});}else{const num=parseInt(value);const isOver=ps.total>hole.range[1];if(isOver){ps.total-=num;ps.shots.push({type:"slide",val:num,dir:"sub"});}else{ps.total+=num;ps.shots.push({type:"slide",val:num,dir:"add"});}
+        // Mandatory-number rule: "onGreen" requires both in-range AND the
+        // mustHit zone to have been used during this hole.
+        const inRange=ps.total>=hole.range[0]&&ps.total<=hole.range[1];
+        const mustOk=!hole.mustHit||ps.shots.some(s=>s.type==="slide"&&s.val===hole.mustHit);
+        if(inRange&&mustOk)ps.onGreen=true;}}
       return{...prev,[player]:ps};
     });
   }
@@ -816,7 +821,7 @@ export default function App(){
       const last=ps.shots.pop();
       if(last.type==="holeout"){ps.holeOut=false;}
       else if(last.type==="putt")ps.putts-=1;
-      else if(last.type==="slide"){if(last.dir==="sub")ps.total+=last.val;else ps.total-=last.val;const hole=selCourse.holes[curHole];ps.onGreen=ps.total>=hole.range[0]&&ps.total<=hole.range[1];}
+      else if(last.type==="slide"){if(last.dir==="sub")ps.total+=last.val;else ps.total-=last.val;const hole=selCourse.holes[curHole];const inRange=ps.total>=hole.range[0]&&ps.total<=hole.range[1];const mustOk=!hole.mustHit||ps.shots.some(s=>s.type==="slide"&&s.val===hole.mustHit);ps.onGreen=inRange&&mustOk;}
       return{...prev,[player]:ps};
     });
   }
