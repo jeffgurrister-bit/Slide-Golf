@@ -139,41 +139,52 @@ export default function App(){
     return ()=>unsub();
   },[me]);
 
-  // ─── ROUND DRAFTS (localStorage) ────────────────────────
-  // Persists in-progress round state so closing the tab / walking away for
-  // an hour doesn't lose data. Saves on score/hole-state changes; restores
-  // via prompt at app load. Local to this device/browser.
-  const draftKey = me ? `sg-draft-round-${me}` : null;
-  // On app load, if there's a draft, ask the user whether to resume.
+  // ─── ROUND DRAFTS (Firestore, cross-device) ─────────────
+  // Persists in-progress round state to drafts/{uid} so closing the tab /
+  // walking away / switching devices doesn't lose data. Saves on score/hole
+  // changes with a 3-second debounce so we don't hammer Firestore. Restores
+  // via prompt at app load. Cross-device works because we key on
+  // authUser.uid — sign in on a different phone, same draft.
+  //
+  // For multi-player rounds (two players sharing one device): use Live
+  // Rounds instead — they're already synced across devices via the
+  // liveRounds collection. Drafts here are single-user only.
+  const draftRef = authUser ? doc(db, "drafts", authUser.uid) : null;
+  // On app load (after auth resolves), check for a draft and prompt.
   useEffect(() => {
-    if (!loaded || !me || !draftKey) return;
-    try {
-      const raw = localStorage.getItem(draftKey);
-      if (!raw) return;
-      const d = JSON.parse(raw);
-      // Stale drafts (>3 days old) are silently dropped — probably forgotten.
-      if (!d || !d.selCourse || (Date.now() - (d.savedAt || 0)) > 3 * 86_400_000) {
-        localStorage.removeItem(draftKey);
-        return;
-      }
-      // Only prompt if we don't currently have an active round in progress.
-      if (playMode === "holes" || playMode === "review") return;
-      setDraftPrompt(d);
-    } catch (e) { /* corrupt draft → ignore */ }
+    if (!authReady || !authUser) return;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, "drafts", authUser.uid));
+        if (!snap.exists()) return;
+        const d = snap.data();
+        // Stale drafts (>3 days) auto-clean.
+        if (!d || !d.selCourse || (Date.now() - (d.savedAt || 0)) > 3 * 86_400_000) {
+          try { await deleteDoc(doc(db, "drafts", authUser.uid)); } catch (e) {}
+          return;
+        }
+        // Don't prompt if we're already mid-round.
+        if (playMode === "holes" || playMode === "review") return;
+        setDraftPrompt(d);
+      } catch (e) { /* best effort */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, me]);
-  // Auto-save the draft whenever the round state changes during play.
+  }, [authReady, authUser]);
+  // Debounced auto-save during play.
   useEffect(() => {
-    if (!draftKey || !selCourse || playMode !== "holes") return;
-    try {
-      localStorage.setItem(draftKey, JSON.stringify({
-        savedAt: Date.now(),
-        selCourse, roundPlayers, allScores, allShotLogs, savedHoleStates,
-        curHole, holeCount, nineType, playMode, hideScores, useHdcp, hdcps,
-        // Tournament / league context so resume picks up the right tags.
-        activeTourney, activeLeagueMatch
-      }));
-    } catch (e) { /* quota / disabled — best effort */ }
+    if (!draftRef || !selCourse || playMode !== "holes") return;
+    const t = setTimeout(async () => {
+      try {
+        await setDoc(draftRef, {
+          savedAt: Date.now(),
+          selCourse, roundPlayers, allScores, allShotLogs, savedHoleStates,
+          curHole, holeCount, nineType, playMode, hideScores, useHdcp, hdcps,
+          activeTourney: activeTourney || null,
+          activeLeagueMatch: activeLeagueMatch || null,
+        });
+      } catch (e) { /* offline / network — try again next change */ }
+    }, 3000);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selCourse, roundPlayers, allScores, allShotLogs, savedHoleStates, curHole, playMode]);
   function resumeDraft() {
@@ -189,12 +200,12 @@ export default function App(){
     setDraftPrompt(null);
     setTab("play");
   }
-  function discardDraft() {
-    if (draftKey) try { localStorage.removeItem(draftKey); } catch (e) {}
+  async function discardDraft() {
+    if (draftRef) try { await deleteDoc(draftRef); } catch (e) {}
     setDraftPrompt(null);
   }
-  // Clear the draft once a round is saved or abandoned via startRound.
-  function clearDraft() { if (draftKey) try { localStorage.removeItem(draftKey); } catch (e) {} }
+  // Clear the draft once a round is saved or abandoned.
+  async function clearDraft() { if (draftRef) try { await deleteDoc(draftRef); } catch (e) {} }
 
   // Deadline checker. Runs once on app load (after data loads) for any
   // league I'm the creator of that has weeklyDeadlineDays set. Browser-side
