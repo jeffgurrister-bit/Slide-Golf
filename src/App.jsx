@@ -87,53 +87,24 @@ export default function App(){
   const isSpectator=isLive&&liveScoreMode==="keeper"&&liveData?.host!==me;
 
   // ─── AUTH STATE ────────────────────────────────────────
-  // Listens to Firebase Auth. When the user signs in, resolve their linked
-  // player name via users/{uid} and stash it in `me`. When they sign out,
-  // clear `me`. authReady flips true on first resolve so we don't flash
-  // the auth screen before knowing if the user is signed in already.
-  // On iOS Safari, signInWithRedirect can leave Firebase in a state where
-  // it needs getRedirectResult() called to materialize the credential
-  // before onAuthStateChanged fires the signed-in user. We await that
-  // here BEFORE subscribing so the redirect doesn't dead-end into the
-  // sign-in screen.
+  // Auth is temporarily disabled — the app reads `me` from localStorage
+  // on mount and lets the user pick/create a player inline. The auth
+  // wiring and AuthScreen component are kept in the codebase so they
+  // can be re-enabled later without rewriting from scratch.
   useEffect(() => {
-    let unsub;
-    let mounted = true;
-    (async () => {
-      try {
-        await getRedirectResult(auth);
-      } catch (e) {
-        // Errors here are surfaced via onAuthStateChanged downstream —
-        // we just need the call to complete so any pending redirect is
-        // consumed.
-      }
-      if (!mounted) return;
-      unsub = onAuthStateChanged(auth, async (user) => {
-        setAuthUser(user);
-        if (!user) {
-          setMe("");
-          try { localStorage.removeItem("sg-me"); } catch (e) {}
-          setAuthReady(true);
-          return;
-        }
-        try {
-          const userSnap = await getDoc(doc(db, "users", user.uid));
-          if (userSnap.exists()) {
-            const pn = userSnap.data().playerName || "";
-            setMe(pn);
-            try { localStorage.setItem("sg-me", pn); } catch (e) {}
-          } else {
-            // Auth user with no linked profile yet — first-time Google
-            // sign-in or a sign-up that failed at the profile step.
-            // AuthScreen renders the "complete profile" flow.
-            setMe("");
-          }
-        } catch (e) { /* swallow — try again next state change */ }
-        setAuthReady(true);
-      });
-    })();
-    return () => { mounted = false; if (unsub) unsub(); };
+    try {
+      const stored = localStorage.getItem("sg-me") || "";
+      if (stored) setMe(stored);
+    } catch (e) {}
+    setAuthReady(true);
   }, []);
+  // Persist `me` so picking once carries across reloads.
+  useEffect(() => {
+    try {
+      if (me) localStorage.setItem("sg-me", me);
+      else localStorage.removeItem("sg-me");
+    } catch (e) {}
+  }, [me]);
 
   // ─── FIREBASE LISTENERS ────────────────────────────────
   useEffect(()=>{const u=[];
@@ -1359,9 +1330,43 @@ export default function App(){
       </div>
     );
   }
-  // Not signed in (or signed in but no linked profile) — show auth screen.
-  if (!authUser || !me) {
-    return <AuthScreen players={players} authUser={authUser} onSignedIn={() => { /* state flows via onAuthStateChanged */ }} />;
+  // No player picked yet — inline picker (auth is temporarily disabled).
+  if (!me) {
+    return (
+      <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Segoe UI',system-ui,sans-serif",color:C.text}}>
+        <div style={{background:C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${C.green}`,display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:34,height:34,borderRadius:"50%",background:C.accent,border:`2px solid ${C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>⛳</div>
+          <div>
+            <div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase"}}>Slide Golf</div>
+            <div style={{fontSize:10,color:C.muted,letterSpacing:1}}>LEAGUE TRACKER</div>
+          </div>
+        </div>
+        <div style={{maxWidth:420,margin:"0 auto",padding:24,display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{textAlign:"center",padding:"16px 0 4px"}}>
+            <div style={{fontSize:22,fontWeight:700}}>Who's playing?</div>
+            <div style={{color:C.muted,fontSize:12,marginTop:6}}>Pick yourself from the list, or add a new player.</div>
+          </div>
+          <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",gap:8}}>
+            {(players||[]).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(p=>(
+              <button key={p.id} onClick={()=>setMe(p.name)} style={{...btnS(false),padding:"10px 12px",textAlign:"left",fontSize:14}}>{p.name}</button>
+            ))}
+            {!players.length&&<div style={{color:C.muted,fontSize:12,textAlign:"center",padding:8}}>No players yet — add one below.</div>}
+          </div>
+          <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",gap:8}}>
+            <div style={{fontSize:11,color:C.muted}}>Add new player</div>
+            <input id="sg-new-player" placeholder="Your name" style={{...inputS,width:"100%"}} onKeyDown={async(e)=>{
+              if(e.key!=="Enter")return;
+              const name=e.target.value.trim();
+              if(!name)return;
+              if(players.some(p=>p.name.toLowerCase()===name.toLowerCase())){setMe(players.find(p=>p.name.toLowerCase()===name.toLowerCase()).name);return;}
+              try{await addDoc(collection(db,"players"),{name,createdAt:Date.now()});}catch(err){}
+              setMe(name);
+            }}/>
+            <div style={{fontSize:10,color:C.muted}}>Press Enter to add and continue.</div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // ─── COMPUTED VALUES ───────────────────────────────────
@@ -1434,7 +1439,7 @@ export default function App(){
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}} @keyframes hioGlow{0%{text-shadow:0 0 10px #ff6b00}50%{text-shadow:0 0 30px #ff6b00,0 0 60px #ff4400}100%{text-shadow:0 0 10px #ff6b00}} @keyframes champGlow{0%{box-shadow:0 0 20px rgba(212,184,74,0.3)}50%{box-shadow:0 0 40px rgba(212,184,74,0.6)}100%{box-shadow:0 0 20px rgba(212,184,74,0.3)}} @keyframes fadeIn{0%{opacity:0;transform:scale(0.95)}100%{opacity:1;transform:scale(1)}}`}</style>
       {/* HEADER */}
       {(()=>{const champLg=activeLeagueMatch?.leagueId?(activeLeagueMatch.leagueId==="s1"?{name:"Season 1"}:leagues.find(l=>l.id===activeLeagueMatch.leagueId)):null;const subtitle=activeLeagueMatch?.isChampionship?(champLg?.name?`${champLg.name.toUpperCase()} FINALS`:"CHAMPIONSHIP"):"LEAGUE TRACKER";return (
-      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{subtitle}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}{me&&(()=>{const unread=notifications.filter(n=>!n.read).length;return <button onClick={()=>setShowNotifications(true)} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,position:"relative",padding:"2px 4px",lineHeight:1}}>🔔{unread>0&&<span style={{position:"absolute",top:-2,right:-4,background:C.red,color:"#fff",fontSize:9,fontWeight:700,minWidth:14,height:14,borderRadius:7,padding:"0 3px",display:"flex",alignItems:"center",justifyContent:"center"}}>{unread>9?"9+":unread}</span>}</button>;})()}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={async()=>{try{await signOut(auth);}catch(e){}}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Sign out</button></div></div>
+      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{subtitle}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}{me&&(()=>{const unread=notifications.filter(n=>!n.read).length;return <button onClick={()=>setShowNotifications(true)} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,position:"relative",padding:"2px 4px",lineHeight:1}}>🔔{unread>0&&<span style={{position:"absolute",top:-2,right:-4,background:C.red,color:"#fff",fontSize:9,fontWeight:700,minWidth:14,height:14,borderRadius:7,padding:"0 3px",display:"flex",alignItems:"center",justifyContent:"center"}}>{unread>9?"9+":unread}</span>}</button>;})()}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={()=>setMe("")} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Switch</button></div></div>
       );})()}
       {/* TABS */}
       <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`}}>{[["home","Home"],["courses","Courses"],["play","Play"],["league","League"],["leaderboard","Board"],["stats","Stats"]].map(([k,l])=>(<button key={k} onClick={()=>{setTab(k);if(k==="courses")setCreating(false);if(k!=="home")setShowTourney(false);}} style={{flex:1,padding:"11px 4px",background:tab===k?C.accent:"transparent",color:tab===k?C.white:C.muted,border:"none",cursor:"pointer",fontSize:11,fontWeight:tab===k?700:400,borderBottom:tab===k?`2px solid ${C.greenLt}`:"2px solid transparent"}}>{l}</button>))}</div>
