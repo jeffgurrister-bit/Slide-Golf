@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { db } from "./firebase.js";
+import { db, auth } from "./firebase.js";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import {
-  collection, addDoc, deleteDoc, doc, onSnapshot,
+  collection, addDoc, deleteDoc, doc, onSnapshot, setDoc,
   query, orderBy, updateDoc, where, getDocs, getDoc, arrayUnion, arrayRemove
 } from "firebase/firestore";
 
@@ -21,6 +22,7 @@ import LeagueTab from "./components/LeagueTab.jsx";
 import CoursesTab from "./components/CoursesTab.jsx";
 import RoundDetailOverlay from "./components/RoundDetailOverlay.jsx";
 import NotificationsPanel from "./components/NotificationsPanel.jsx";
+import AuthScreen from "./components/AuthScreen.jsx";
 import PlayTab from "./components/PlayTab.jsx";
 import LeaderboardTab from "./components/LeaderboardTab.jsx";
 import StatsTab from "./components/StatsTab.jsx";
@@ -28,12 +30,17 @@ import StatsTab from "./components/StatsTab.jsx";
 // ─── MAIN APP ───────────────────────────────────────────
 export default function App(){
   const[tab,setTab]=useState("home");
-  const[me,setMe]=useState(()=>{try{return localStorage.getItem("sg-me")||"";}catch(e){return"";}});
+  // `me` is the display name of the player linked to the current Firebase
+  // Auth user. Resolved by the onAuthStateChanged effect — until that fires
+  // we show a loading/auth screen, NOT the typed-name welcome screen.
+  const[me,setMe]=useState("");
+  const[authUser,setAuthUser]=useState(null);
+  const[authReady,setAuthReady]=useState(false);
   const[players,setPlayers]=useState([]);const[rounds,setRounds]=useState([]);const[customCourses,setCustomCourses]=useState([]);const[loaded,setLoaded]=useState(false);
   const[selCourse,setSelCourse]=useState(null);const[roundPlayers,setRoundPlayers]=useState([]);const[playMode,setPlayMode]=useState("setup");
   const[curPlayerIdx,setCurPlayerIdx]=useState(0);const[curHole,setCurHole]=useState(0);const[holeState,setHoleState]=useState({});
   const[allScores,setAllScores]=useState({});const[allShotLogs,setAllShotLogs]=useState({});
-  const[hideScores,setHideScores]=useState(false);const[nine,setNine]=useState(0);const[newPlayerName,setNewPlayerName]=useState("");
+  const[hideScores,setHideScores]=useState(false);const[nine,setNine]=useState(0);
   const[showScorecard,setShowScorecard]=useState(false);
   const[useHdcp,setUseHdcp]=useState(false);const[hdcps,setHdcps]=useState({});
   // Quick Score doesn't capture per-shot data, so putts have to be entered
@@ -78,6 +85,38 @@ export default function App(){
   const isLive=!!liveId&&!!liveData;
   const isKeeperHost=isLive&&liveScoreMode==="keeper"&&liveData?.host===me;
   const isSpectator=isLive&&liveScoreMode==="keeper"&&liveData?.host!==me;
+
+  // ─── AUTH STATE ────────────────────────────────────────
+  // Listens to Firebase Auth. When the user signs in, resolve their linked
+  // player name via users/{uid} and stash it in `me`. When they sign out,
+  // clear `me`. authReady flips true on first resolve so we don't flash
+  // the auth screen before knowing if the user is signed in already.
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setAuthUser(user);
+      if (!user) {
+        setMe("");
+        try { localStorage.removeItem("sg-me"); } catch (e) {}
+        setAuthReady(true);
+        return;
+      }
+      try {
+        const userSnap = await getDoc(doc(db, "users", user.uid));
+        if (userSnap.exists()) {
+          const pn = userSnap.data().playerName || "";
+          setMe(pn);
+          try { localStorage.setItem("sg-me", pn); } catch (e) {}
+        } else {
+          // Auth user without a linked profile — shouldn't happen via the
+          // normal sign-up flow but recover by signing them out so they
+          // can claim a player on next sign-up.
+          await signOut(auth);
+        }
+      } catch (e) { /* swallow — try again next state change */ }
+      setAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
 
   // ─── FIREBASE LISTENERS ────────────────────────────────
   useEffect(()=>{const u=[];
@@ -300,7 +339,6 @@ export default function App(){
   async function deleteNotification(id) {
     await deleteDoc(doc(db, "notifications", id));
   }
-  function selectMe(name){setMe(name);try{localStorage.setItem("sg-me",name);}catch(e){}}
 
   // ─── LIVE ROUND FUNCTIONS ──────────────────────────────
   async function goLive(){
@@ -1284,43 +1322,18 @@ export default function App(){
 
   // ─── LOADING / LOGIN ──────────────────────────────────
   if(!loaded)return<div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{color:C.greenLt,fontSize:18}}>Loading Slide Golf...</div></div>;
-  if(!me){
-    const trimmed=newPlayerName.trim();
-    const exists=trimmed&&players.some(p=>p.name.toLowerCase()===trimmed.toLowerCase());
-    const matchedExisting=exists?players.find(p=>p.name.toLowerCase()===trimmed.toLowerCase()).name:null;
-    const handleContinue=async()=>{
-      if(!trimmed)return;
-      if(matchedExisting){selectMe(matchedExisting);}
-      else{await addPlayerToDB(trimmed);selectMe(trimmed);}
-      setNewPlayerName("");
-    };
-    const buttonLabel=trimmed?(exists?`Continue as ${matchedExisting}`:`Create profile · ${trimmed}`):"Continue";
+  // While Auth resolves on first load show a quick splash so we don't
+  // flash the auth screen at someone who's already signed in.
+  if (!authReady) {
     return (
-      <div style={{background:C.bg,minHeight:"100vh",fontFamily:"'Segoe UI',system-ui,sans-serif",color:C.text}}>
-        <div style={{background:C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${C.green}`,display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:C.accent,border:`2px solid ${C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>⛳</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase"}}>Slide Golf</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>LEAGUE TRACKER</div></div></div>
-        <div style={{maxWidth:400,margin:"0 auto",padding:24,display:"flex",flexDirection:"column",gap:16}}>
-          <div style={{textAlign:"center",padding:"20px 0 4px"}}>
-            <div style={{fontSize:22,fontWeight:700}}>Welcome to Slide Golf</div>
-            <div style={{color:C.muted,fontSize:13,marginTop:6}}>{players.length===0?"Pick a name to get started":"Sign in or create a new profile"}</div>
-          </div>
-          {/* Smart sign-in: type your name, button does the right thing */}
-          <div style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>
-            <div style={{fontSize:11,color:C.muted,marginBottom:6}}>Your name</div>
-            <input value={newPlayerName} onChange={e=>setNewPlayerName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")handleContinue();}} placeholder="e.g. Jeff Gurrister" autoFocus style={{...inputS,width:"100%"}}/>
-            <button onClick={handleContinue} disabled={!trimmed} style={{...btnS(!!trimmed),width:"100%",padding:14,fontSize:14,marginTop:10,opacity:trimmed?1:0.5,cursor:trimmed?"pointer":"not-allowed"}}>{buttonLabel}</button>
-            {trimmed&&!exists&&<div style={{fontSize:10,color:C.muted,marginTop:6,textAlign:"center"}}>No existing profile found — we'll create one for you.</div>}
-            {exists&&<div style={{fontSize:10,color:C.greenLt,marginTop:6,textAlign:"center"}}>✓ Existing profile found.</div>}
-          </div>
-          {/* Quick-pick existing players */}
-          {players.length>0&&<div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:8,textAlign:"center"}}>or pick someone already here</div>
-            <div style={{display:"grid",gridTemplateColumns:players.length>4?"1fr 1fr":"1fr",gap:6}}>
-              {players.map(p=>(<button key={p.id} onClick={()=>selectMe(p.name)} style={{padding:"10px 12px",borderRadius:8,border:`1px solid ${C.border}`,background:C.card2,color:C.text,cursor:"pointer",fontSize:13,fontWeight:500,textAlign:"center"}}>{p.name}</button>))}
-            </div>
-          </div>}
-        </div>
+      <div style={{background:C.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:C.muted,fontSize:13}}>
+        ⛳ Loading…
       </div>
     );
+  }
+  // Not signed in (or signed in but no linked profile) — show auth screen.
+  if (!authUser || !me) {
+    return <AuthScreen players={players} onSignedIn={() => { /* state flows via onAuthStateChanged */ }} />;
   }
 
   // ─── COMPUTED VALUES ───────────────────────────────────
@@ -1393,7 +1406,7 @@ export default function App(){
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}} @keyframes hioGlow{0%{text-shadow:0 0 10px #ff6b00}50%{text-shadow:0 0 30px #ff6b00,0 0 60px #ff4400}100%{text-shadow:0 0 10px #ff6b00}} @keyframes champGlow{0%{box-shadow:0 0 20px rgba(212,184,74,0.3)}50%{box-shadow:0 0 40px rgba(212,184,74,0.6)}100%{box-shadow:0 0 20px rgba(212,184,74,0.3)}} @keyframes fadeIn{0%{opacity:0;transform:scale(0.95)}100%{opacity:1;transform:scale(1)}}`}</style>
       {/* HEADER */}
       {(()=>{const champLg=activeLeagueMatch?.leagueId?(activeLeagueMatch.leagueId==="s1"?{name:"Season 1"}:leagues.find(l=>l.id===activeLeagueMatch.leagueId)):null;const subtitle=activeLeagueMatch?.isChampionship?(champLg?.name?`${champLg.name.toUpperCase()} FINALS`:"CHAMPIONSHIP"):"LEAGUE TRACKER";return (
-      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{subtitle}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}{me&&(()=>{const unread=notifications.filter(n=>!n.read).length;return <button onClick={()=>setShowNotifications(true)} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,position:"relative",padding:"2px 4px",lineHeight:1}}>🔔{unread>0&&<span style={{position:"absolute",top:-2,right:-4,background:C.red,color:"#fff",fontSize:9,fontWeight:700,minWidth:14,height:14,borderRadius:7,padding:"0 3px",display:"flex",alignItems:"center",justifyContent:"center"}}>{unread>9?"9+":unread}</span>}</button>;})()}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={()=>{setMe("");try{localStorage.removeItem("sg-me");}catch(e){}}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Switch</button></div></div>
+      <div style={{background:activeLeagueMatch?.isChampionship?"linear-gradient(135deg,#2a1a00,#3a2a00)":C.headerBg,padding:"14px 20px",borderBottom:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.green}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:12}}><div style={{width:34,height:34,borderRadius:"50%",background:activeLeagueMatch?.isChampionship?"rgba(212,184,74,0.3)":C.accent,border:`2px solid ${activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{activeLeagueMatch?.isChampionship?"🏆":"⛳"}</div><div><div style={{fontWeight:700,fontSize:17,letterSpacing:2,textTransform:"uppercase",color:activeLeagueMatch?.isChampionship?"#d4b84a":C.text}}>{activeLeagueMatch?.isChampionship?"Championship":"Slide Golf"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:1}}>{subtitle}</div></div></div><div style={{display:"flex",alignItems:"center",gap:8}}>{isLive&&<span style={{fontSize:10,color:C.red,fontWeight:700}}>🔴 LIVE</span>}{me&&(()=>{const unread=notifications.filter(n=>!n.read).length;return <button onClick={()=>setShowNotifications(true)} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,position:"relative",padding:"2px 4px",lineHeight:1}}>🔔{unread>0&&<span style={{position:"absolute",top:-2,right:-4,background:C.red,color:"#fff",fontSize:9,fontWeight:700,minWidth:14,height:14,borderRadius:7,padding:"0 3px",display:"flex",alignItems:"center",justifyContent:"center"}}>{unread>9?"9+":unread}</span>}</button>;})()}<span style={{fontSize:12,color:activeLeagueMatch?.isChampionship?"#d4b84a":C.greenLt}}>{me}</span><button onClick={async()=>{try{await signOut(auth);}catch(e){}}} style={{background:"transparent",border:`1px solid ${C.border}`,color:C.muted,borderRadius:6,padding:"4px 8px",cursor:"pointer",fontSize:10}}>Sign out</button></div></div>
       );})()}
       {/* TABS */}
       <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`}}>{[["home","Home"],["courses","Courses"],["play","Play"],["league","League"],["leaderboard","Board"],["stats","Stats"]].map(([k,l])=>(<button key={k} onClick={()=>{setTab(k);if(k==="courses")setCreating(false);if(k!=="home")setShowTourney(false);}} style={{flex:1,padding:"11px 4px",background:tab===k?C.accent:"transparent",color:tab===k?C.white:C.muted,border:"none",cursor:"pointer",fontSize:11,fontWeight:tab===k?700:400,borderBottom:tab===k?`2px solid ${C.greenLt}`:"2px solid transparent"}}>{l}</button>))}</div>
@@ -1592,23 +1605,30 @@ export default function App(){
               </div>
             </div>}
             {/* Recent rounds */}
-            {profilePlayer === me && players.length > 1 && (
-              <div style={{padding:"0 16px 16px"}}>
-                <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>🔀 Merge a duplicate profile</div>
-                <div style={{fontSize:10,color:C.muted,marginBottom:8}}>If you accidentally signed in twice, pick the duplicate and we'll fold its rounds/matches/notifications into your main profile.</div>
-                <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                  {players.filter(p => p.name !== me).map(p => {
-                    const theirRoundCount = rounds.filter(r => r.player === p.name).length;
-                    return (
-                      <button key={p.id} onClick={() => mergePlayer(p.name, me)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",cursor:"pointer",color:C.text,fontSize:12}}>
-                        <span style={{fontWeight:600}}>{p.name}</span>
-                        <span style={{color:C.muted,fontSize:10}}>{theirRoundCount} round{theirRoundCount!==1?"s":""} → merge into me</span>
-                      </button>
-                    );
-                  })}
+            {profilePlayer === me && (() => {
+              // Only allow merging UNCLAIMED player docs (no uid) — prevents
+              // a signed-in user from absorbing someone else's claimed
+              // profile. The destination is always `me`.
+              const mergeable = players.filter(p => p.name !== me && !p.uid);
+              if (!mergeable.length) return null;
+              return (
+                <div style={{padding:"0 16px 16px"}}>
+                  <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>🔀 Merge a duplicate profile</div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:8}}>If you (or someone) created a duplicate profile before auth, fold its rounds/matches/notifications into your main account. Only unclaimed profiles can be merged.</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                    {mergeable.map(p => {
+                      const theirRoundCount = rounds.filter(r => r.player === p.name).length;
+                      return (
+                        <button key={p.id} onClick={() => mergePlayer(p.name, me)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",cursor:"pointer",color:C.text,fontSize:12}}>
+                          <span style={{fontWeight:600}}>{p.name}</span>
+                          <span style={{color:C.muted,fontSize:10}}>{theirRoundCount} round{theirRoundCount!==1?"s":""} → merge into me</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             {ach.recentRounds.length>0 && <div style={{padding:"0 16px 16px"}}>
               <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>📋 Recent Rounds</div>
               {ach.recentRounds.map(r=>{const lvl=r.courseLevel;const lvlColor=lvl==="Easy"?"#22c55e":lvl==="Medium"?"#3b82f6":lvl==="Hard"?"#f59e0b":"#ef4444";const mt=r.matchType;const matchTag=mt==="championship"?"🏆":mt==="playoff"?"⚡PO":mt==="league"?"⚡":mt==="pga"?"📺":null;const matchColor=mt==="championship"?C.gold:mt==="pga"?C.blue:C.greenLt;return<div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:12,cursor:"pointer"}} onClick={()=>openRoundDetail(r)}>
