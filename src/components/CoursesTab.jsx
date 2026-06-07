@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { C, btnS, inputS, smallInput } from "../utils/theme.js";
-import { calcPar, fmtRange, fmtR, computeCourseStats } from "../utils/helpers.jsx";
+import { calcPar, fmtRange, fmtR, computeCourseStats, calcHandicap, roundHoleCount, isRoundSealed } from "../utils/helpers.jsx";
 import { FAMOUS_COURSES } from "../data/famousCourses.js";
 
 // Favorites are stored per-player in localStorage. Cheap and private — no
@@ -121,6 +121,44 @@ export default function CoursesTab({
         )}
         <div style={{padding:10,overflowX:"auto"}}>{[0,9].map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:10,marginBottom:start===0?4:0,minWidth:460}}><thead><tr style={{background:C.accent}}><th style={{padding:"4px 6px",textAlign:"left",fontWeight:700,minWidth:44}}>HOLE</th>{c.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"4px 2px",textAlign:"center",minWidth:30}}>{h.num}</th>)}<th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:42}}>{start===0?"OUT":"IN"}</th>{start===9&&<th style={{padding:"4px 4px",textAlign:"center",fontWeight:700,minWidth:42}}>TOT</th>}</tr></thead><tbody><tr style={{background:C.card2}}><td style={{padding:"3px 6px",fontWeight:600,color:C.greenLt,fontSize:9}}>RANGE</td>{c.holes.slice(start,start+9).map(h=><td key={h.num} style={{padding:"2px 1px",textAlign:"center",fontSize:9,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:9,color:C.muted}}>{fmtRange(c.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontSize:9,color:C.muted}}>{fmtRange(c.holes,0,18)}</td>}</tr><tr><td style={{padding:"3px 6px",fontWeight:600}}>PAR</td>{c.holes.slice(start,start+9).map(h=><td key={h.num} style={{padding:"2px",textAlign:"center"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(c.holes,start,start+9)}</td>{start===9&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{tp}</td>}</tr>{open&&stats&&<><tr style={{background:C.card2}}><td style={{padding:"3px 6px",fontWeight:600,color:C.blue,fontSize:9}}>AVG</td>{c.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const a=stats.holeAvgs[idx];const d=stats.overUnderPerHole?.[idx];const color=d==null?C.muted:d<0?C.greenLt:d>0?"#ff6b6b":C.text;return<td key={h.num} style={{padding:"2px 1px",textAlign:"center",fontSize:9,color,fontWeight:600}}>{a==null?"—":a}</td>;})}<td style={{padding:"2px",textAlign:"center",fontSize:9,color:C.muted}}>—</td>{start===9&&<td style={{textAlign:"center",fontSize:9,color:C.blue,fontWeight:700}}>{stats.avg??"—"}</td>}</tr></>}</tbody></table>))}</div>
         {open&&stats&&<div style={{padding:"6px 14px",background:C.card2,borderTop:`1px solid ${C.border}`,fontSize:11,display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}><span style={{color:C.muted}}>{stats.rounds} round{stats.rounds!==1?"s":""}</span>{stats.hardestIdx!=null&&<span style={{color:"#ff6b6b"}}>Hardest: #{stats.hardestIdx+1}</span>}{stats.easiestIdx!=null&&<span style={{color:C.greenLt}}>Easiest: #{stats.easiestIdx+1}</span>}</div>}
+        {open && me && (() => {
+          // Per-user per-course stats — view-specific so Jeff sees his
+          // numbers and Jimmie sees his when each opens this same course.
+          const mine = (rounds || []).filter(r =>
+            r.player === me && r.course === c.name &&
+            roundHoleCount(r) === 18 && !r.par3 &&
+            !isRoundSealed(r, leagueMatches, me)
+          );
+          if (!mine.length) return (
+            <div style={{padding:"6px 14px",background:C.card,borderTop:`1px solid ${C.border}`,fontSize:10,color:C.muted,textAlign:"center"}}>
+              You haven't played this course yet.
+            </div>
+          );
+          const myHcp = calcHandicap(mine);
+          const myBest = Math.min(...mine.map(r => r.total));
+          const myAvg = Math.round(mine.reduce((s,r)=>s+r.total,0) / mine.length * 10) / 10;
+          const myToPar = myBest - mine.find(r=>r.total===myBest).par;
+          return (
+            <div style={{padding:"8px 14px",background:"rgba(74,170,74,0.05)",borderTop:`1px solid ${C.border}`,display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,fontSize:11}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:9,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Your HDCP</div>
+                <div style={{fontWeight:700,fontSize:14,color:myHcp!=null&&myHcp<0?C.greenLt:myHcp!=null&&myHcp>0?C.red:C.text}}>{myHcp != null ? (myHcp > 0 ? `+${myHcp}` : myHcp) : "—"}</div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:9,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Your Best</div>
+                <div style={{fontWeight:700,fontSize:14}}>{myBest} <span style={{fontSize:10,color:myToPar<0?C.greenLt:myToPar>0?C.red:C.muted}}>{myToPar===0?"E":myToPar>0?`+${myToPar}`:myToPar}</span></div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:9,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Your Avg</div>
+                <div style={{fontWeight:700,fontSize:14}}>{myAvg}</div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:9,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Rounds</div>
+                <div style={{fontWeight:700,fontSize:14}}>{mine.length}</div>
+              </div>
+            </div>
+          );
+        })()}
         {open&&!stats&&<div style={{padding:"8px 14px",background:C.card2,borderTop:`1px solid ${C.border}`,fontSize:11,color:C.muted,textAlign:"center"}}>No 18-hole rounds yet</div>}
         <div style={{padding:"6px 10px",borderTop:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>

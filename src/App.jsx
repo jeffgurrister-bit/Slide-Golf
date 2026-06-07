@@ -52,6 +52,8 @@ export default function App(){
   const[liveScoreMode,setLiveScoreMode]=useState("keeper");
   const[savedHoleStates,setSavedHoleStates]=useState({});
   const[holeCount,setHoleCount]=useState(18);const[nineType,setNineType]=useState("front");
+  // Draft prompt: shown at app load if a previous round was abandoned mid-play.
+  const[draftPrompt,setDraftPrompt]=useState(null);
 
   // ─── LEAGUE STATE ─────────────────────────────────────
   const[leagues,setLeagues]=useState([]);
@@ -97,6 +99,63 @@ export default function App(){
     });
     return ()=>unsub();
   },[me]);
+
+  // ─── ROUND DRAFTS (localStorage) ────────────────────────
+  // Persists in-progress round state so closing the tab / walking away for
+  // an hour doesn't lose data. Saves on score/hole-state changes; restores
+  // via prompt at app load. Local to this device/browser.
+  const draftKey = me ? `sg-draft-round-${me}` : null;
+  // On app load, if there's a draft, ask the user whether to resume.
+  useEffect(() => {
+    if (!loaded || !me || !draftKey) return;
+    try {
+      const raw = localStorage.getItem(draftKey);
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      // Stale drafts (>3 days old) are silently dropped — probably forgotten.
+      if (!d || !d.selCourse || (Date.now() - (d.savedAt || 0)) > 3 * 86_400_000) {
+        localStorage.removeItem(draftKey);
+        return;
+      }
+      // Only prompt if we don't currently have an active round in progress.
+      if (playMode === "holes" || playMode === "review") return;
+      setDraftPrompt(d);
+    } catch (e) { /* corrupt draft → ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, me]);
+  // Auto-save the draft whenever the round state changes during play.
+  useEffect(() => {
+    if (!draftKey || !selCourse || playMode !== "holes") return;
+    try {
+      localStorage.setItem(draftKey, JSON.stringify({
+        savedAt: Date.now(),
+        selCourse, roundPlayers, allScores, allShotLogs, savedHoleStates,
+        curHole, holeCount, nineType, playMode, hideScores, useHdcp, hdcps,
+        // Tournament / league context so resume picks up the right tags.
+        activeTourney, activeLeagueMatch
+      }));
+    } catch (e) { /* quota / disabled — best effort */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selCourse, roundPlayers, allScores, allShotLogs, savedHoleStates, curHole, playMode]);
+  function resumeDraft() {
+    if (!draftPrompt) return;
+    const d = draftPrompt;
+    setSelCourse(d.selCourse); setRoundPlayers(d.roundPlayers || []);
+    setAllScores(d.allScores || {}); setAllShotLogs(d.allShotLogs || {});
+    setSavedHoleStates(d.savedHoleStates || {});
+    setCurHole(d.curHole || 0); setHoleCount(d.holeCount || 18); setNineType(d.nineType || "front");
+    setHideScores(!!d.hideScores); setUseHdcp(!!d.useHdcp); setHdcps(d.hdcps || {});
+    setActiveTourney(d.activeTourney || null); setActiveLeagueMatch(d.activeLeagueMatch || null);
+    setPlayMode("holes");
+    setDraftPrompt(null);
+    setTab("play");
+  }
+  function discardDraft() {
+    if (draftKey) try { localStorage.removeItem(draftKey); } catch (e) {}
+    setDraftPrompt(null);
+  }
+  // Clear the draft once a round is saved or abandoned via startRound.
+  function clearDraft() { if (draftKey) try { localStorage.removeItem(draftKey); } catch (e) {} }
 
   // Deadline checker. Runs once on app load (after data loads) for any
   // league I'm the creator of that has weeklyDeadlineDays set. Browser-side
@@ -948,6 +1007,8 @@ export default function App(){
       else setTab("leaderboard");
     }
     if(isLive)leaveLive();
+    // Round is saved — drop any in-progress draft.
+    clearDraft();
    }catch(e){alert("Save error: "+e.message);console.error(e);}
   }
 
@@ -1044,6 +1105,70 @@ export default function App(){
   function closeRoundDetail() { setDetailRound(null); setEditingRound(false); setEditScores(null); setShareOverlay(false); }
   function openPlayerProfile(name) { setProfilePlayer(name); }
   function closePlayerProfile() { setProfilePlayer(null); }
+  // Merge two player profiles into one. All rounds, league matches,
+  // notifications, and league memberships attributed to `fromName` are
+  // re-attributed to `toName`. The fromName player doc is deleted.
+  // Surfaced in the profile overlay when viewing your own profile, so
+  // anyone who accidentally signed in twice can fold their duplicate
+  // back into themselves. Big multi-doc write but well within free tier.
+  async function mergePlayer(fromName, toName) {
+    if (!fromName || !toName || fromName === toName) return;
+    if (!confirm(`Merge "${fromName}" into "${toName}"?\n\nAll of ${fromName}'s rounds, league matches, and notifications will be reattributed to ${toName}. The ${fromName} profile will be deleted. This cannot be undone.`)) return;
+    try {
+      // Rounds
+      const ridUpdates = rounds.filter(r => r.player === fromName).map(r =>
+        updateDoc(doc(db, "rounds", r.id), { player: toName }));
+      await Promise.all(ridUpdates);
+      // League matches — player1/player2/winner string fields
+      const matchUpdates = leagueMatches.filter(m =>
+        m.player1 === fromName || m.player2 === fromName || m.winner === fromName
+      ).map(m => {
+        const u = {};
+        if (m.player1 === fromName) u.player1 = toName;
+        if (m.player2 === fromName) u.player2 = toName;
+        if (m.winner === fromName) u.winner = toName;
+        return updateDoc(doc(db, "leagueMatches", m.id), u);
+      });
+      await Promise.all(matchUpdates);
+      // Notifications (recipient field)
+      const notifSnap = await getDocs(query(collection(db, "notifications"), where("recipient", "==", fromName)));
+      await Promise.all(notifSnap.docs.map(d => updateDoc(d.ref, { recipient: toName })));
+      // Leagues — players array, handicaps map, nicknames map
+      const lgUpdates = leagues.filter(lg => lg.players?.includes(fromName) || lg.handicaps?.[fromName] != null || lg.nicknames?.[fromName] != null);
+      for (const lg of lgUpdates) {
+        const u = {};
+        if (lg.players?.includes(fromName)) {
+          const newPlayers = lg.players.map(p => p === fromName ? toName : p);
+          // Dedup if toName was already in the league.
+          u.players = [...new Set(newPlayers)];
+        }
+        if (lg.handicaps && lg.handicaps[fromName] != null) {
+          const h = { ...lg.handicaps };
+          if (h[toName] == null) h[toName] = h[fromName];
+          delete h[fromName];
+          u.handicaps = h;
+        }
+        if (lg.nicknames && lg.nicknames[fromName]) {
+          const n = { ...lg.nicknames };
+          if (!n[toName]) n[toName] = n[fromName];
+          delete n[fromName];
+          u.nicknames = n;
+        }
+        await updateDoc(doc(db, "leagues", lg.id), u);
+      }
+      // PGA tourney entries
+      const pgaSnap = await getDocs(query(collection(db, "pgaTourneys"), where("player", "==", fromName)));
+      await Promise.all(pgaSnap.docs.map(d => updateDoc(d.ref, { player: toName })));
+      // Delete the source player doc
+      const oldPlayer = players.find(p => p.name === fromName);
+      if (oldPlayer) await deleteDoc(doc(db, "players", oldPlayer.id));
+      alert(`Merged. ${fromName}'s data is now under ${toName}.`);
+      // Drop back to root so any stale state from the merged player clears.
+      closePlayerProfile();
+    } catch (e) {
+      alert("Merge failed: " + e.message);
+    }
+  }
 
   // ─── EDIT ROUND (Feature 10) ───────────────────────────
   async function saveEditedRound() {
@@ -1282,6 +1407,25 @@ export default function App(){
         {tab==="stats"&&<StatsTab playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
       </div>
 
+      {draftPrompt && (
+        <div onClick={(e)=>{if(e.target===e.currentTarget)discardDraft();}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div onClick={(e)=>e.stopPropagation()} style={{background:C.bg,borderRadius:14,border:`1px solid ${C.gold}`,maxWidth:420,width:"100%",padding:20,textAlign:"center"}}>
+            <div style={{fontSize:36,marginBottom:8}}>⏸️</div>
+            <div style={{fontWeight:700,fontSize:18,marginBottom:6}}>Resume your round?</div>
+            <div style={{fontSize:12,color:C.muted,marginBottom:16}}>
+              You have an unfinished round at <strong style={{color:C.text}}>{draftPrompt.selCourse?.name}</strong>
+              {draftPrompt.curHole != null && <> on hole {draftPrompt.curHole + 1}</>}
+              <br/>
+              <span style={{fontSize:10}}>Saved {Math.round((Date.now()-draftPrompt.savedAt)/60000)} min ago</span>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={discardDraft} style={{...btnS(false),flex:1,padding:12,fontSize:13}}>Discard</button>
+              <button onClick={resumeDraft} style={{...btnS(true),flex:1,padding:12,fontSize:13}}>▶ Resume</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showNotifications && <NotificationsPanel
         notifications={notifications}
         onClose={()=>setShowNotifications(false)}
@@ -1448,6 +1592,23 @@ export default function App(){
               </div>
             </div>}
             {/* Recent rounds */}
+            {profilePlayer === me && players.length > 1 && (
+              <div style={{padding:"0 16px 16px"}}>
+                <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>🔀 Merge a duplicate profile</div>
+                <div style={{fontSize:10,color:C.muted,marginBottom:8}}>If you accidentally signed in twice, pick the duplicate and we'll fold its rounds/matches/notifications into your main profile.</div>
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {players.filter(p => p.name !== me).map(p => {
+                    const theirRoundCount = rounds.filter(r => r.player === p.name).length;
+                    return (
+                      <button key={p.id} onClick={() => mergePlayer(p.name, me)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",cursor:"pointer",color:C.text,fontSize:12}}>
+                        <span style={{fontWeight:600}}>{p.name}</span>
+                        <span style={{color:C.muted,fontSize:10}}>{theirRoundCount} round{theirRoundCount!==1?"s":""} → merge into me</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {ach.recentRounds.length>0 && <div style={{padding:"0 16px 16px"}}>
               <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>📋 Recent Rounds</div>
               {ach.recentRounds.map(r=>{const lvl=r.courseLevel;const lvlColor=lvl==="Easy"?"#22c55e":lvl==="Medium"?"#3b82f6":lvl==="Hard"?"#f59e0b":"#ef4444";const mt=r.matchType;const matchTag=mt==="championship"?"🏆":mt==="playoff"?"⚡PO":mt==="league"?"⚡":mt==="pga"?"📺":null;const matchColor=mt==="championship"?C.gold:mt==="pga"?C.blue:C.greenLt;return<div key={r.id} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,fontSize:12,cursor:"pointer"}} onClick={()=>openRoundDetail(r)}>
