@@ -107,10 +107,11 @@ export default function App(){
           setMe(pn);
           try { localStorage.setItem("sg-me", pn); } catch (e) {}
         } else {
-          // Auth user without a linked profile — shouldn't happen via the
-          // normal sign-up flow but recover by signing them out so they
-          // can claim a player on next sign-up.
-          await signOut(auth);
+          // Auth user with no linked profile yet — this is normal for
+          // first-time Google sign-ins or any sign-up where the profile
+          // step failed. Leave `me` empty; AuthScreen will render the
+          // "complete your profile" flow because authUser is set.
+          setMe("");
         }
       } catch (e) { /* swallow — try again next state change */ }
       setAuthReady(true);
@@ -1344,7 +1345,7 @@ export default function App(){
   }
   // Not signed in (or signed in but no linked profile) — show auth screen.
   if (!authUser || !me) {
-    return <AuthScreen players={players} onSignedIn={() => { /* state flows via onAuthStateChanged */ }} />;
+    return <AuthScreen players={players} authUser={authUser} onSignedIn={() => { /* state flows via onAuthStateChanged */ }} />;
   }
 
   // ─── COMPUTED VALUES ───────────────────────────────────
