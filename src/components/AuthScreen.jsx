@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { auth, db } from "../firebase.js";
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword,
   sendPasswordResetEmail, GoogleAuthProvider,
-  signInWithPopup, signInWithRedirect, getRedirectResult, signOut
+  signInWithPopup, signInWithRedirect, signOut
 } from "firebase/auth";
 import {
   collection, doc, setDoc, addDoc, updateDoc, getDoc
@@ -38,19 +38,6 @@ export default function AuthScreen({ players, authUser, onSignedIn }) {
   const [showEmail, setShowEmail] = useState(false);
 
   function reset() { setErr(""); setInfo(""); }
-
-  // Catch errors from a redirect-based sign-in flow when the user lands
-  // back on the page. Successful sign-ins come through onAuthStateChanged
-  // in App.jsx; we only need this to surface failures.
-  useEffect(() => {
-    (async () => {
-      try {
-        await getRedirectResult(auth);
-      } catch (e) {
-        setErr(authError(e));
-      }
-    })();
-  }, []);
 
   // Detect mobile / in-app browsers where popups are unreliable. On these
   // we use signInWithRedirect; on desktop we keep the snappier popup flow.
