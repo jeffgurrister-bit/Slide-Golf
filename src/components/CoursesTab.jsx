@@ -12,9 +12,11 @@ export default function CoursesTab({
   // Creator state
   ccName, setCcName, ccLevel, setCcLevel, ccTournament, setCcTournament,
   ccHoles, setCcHolePar, setCcHoleRange, ccNine, setCcNine, saveCreatedCourse, resetCreator,
-  courseRecords, rounds, leagueMatches, me
+  courseRecords, rounds, leagueMatches, me, openRoundDetail
 }) {
   const [statsOpen, setStatsOpen] = useState({});
+  const [roundsForCourse, setRoundsForCourse] = useState(null); // course name or null
+  const [roundsSort, setRoundsSort] = useState("date"); // "date" | "score"
   const [favorites, setFavorites] = useState(() => {
     try { return JSON.parse(localStorage.getItem(favKey(me)) || "[]"); } catch { return []; }
   });
@@ -169,9 +171,66 @@ export default function CoursesTab({
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             {c.generated?<button onClick={()=>deleteCourseFromDB(c.id)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:11}}>Remove</button>:<div/>}
             <button onClick={()=>setStatsOpen(s=>({...s,[c.name]:!s[c.name]}))} style={{background:"transparent",border:"none",color:open?C.blue:C.muted,cursor:"pointer",fontSize:11}}>{open?"▾":"▸"} Stats</button>
+            <button onClick={()=>{setRoundsForCourse(c.name);setRoundsSort("date");}} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:11}}>🏆 Rounds</button>
           </div>
           <button onClick={()=>startRound(c)} style={{...btnS(true),padding:"6px 14px",fontSize:11}}>Play</button>
         </div></div>;})}
+
+      {roundsForCourse && (()=>{
+        const courseRounds = (rounds||[]).filter(r=>r.course===roundsForCourse && !isRoundSealed(r,leagueMatches,me));
+        const sorted = courseRounds.slice().sort((a,b)=>{
+          if(roundsSort==="score") return (a.total??999)-(b.total??999);
+          // date: newest first; r.date is a yyyy-mm-dd string, falls back to createdAt
+          const da = a.date || "";
+          const db = b.date || "";
+          if(da !== db) return da < db ? 1 : -1;
+          return (b.createdAt||0) - (a.createdAt||0);
+        });
+        return (
+          <div onClick={(e)=>{if(e.target===e.currentTarget)setRoundsForCourse(null);}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",zIndex:9998,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"40px 16px",overflowY:"auto"}}>
+            <div onClick={(e)=>e.stopPropagation()} style={{background:C.bg,borderRadius:14,border:`1px solid ${C.border}`,maxWidth:520,width:"100%"}}>
+              <div style={{padding:"14px 18px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:16}}>{roundsForCourse}</div>
+                  <div style={{fontSize:11,color:C.muted}}>{courseRounds.length} round{courseRounds.length===1?"":"s"} played</div>
+                </div>
+                <button onClick={()=>setRoundsForCourse(null)} style={{background:"transparent",border:"none",color:C.muted,cursor:"pointer",fontSize:18}}>✕</button>
+              </div>
+              <div style={{padding:"8px 18px",display:"flex",gap:6,borderBottom:`1px solid ${C.border}`}}>
+                <button onClick={()=>setRoundsSort("date")} style={{padding:"4px 10px",borderRadius:6,border:roundsSort==="date"?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:roundsSort==="date"?C.accent:"transparent",color:roundsSort==="date"?C.white:C.muted,cursor:"pointer",fontSize:11,fontWeight:600}}>Newest</button>
+                <button onClick={()=>setRoundsSort("score")} style={{padding:"4px 10px",borderRadius:6,border:roundsSort==="score"?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:roundsSort==="score"?C.accent:"transparent",color:roundsSort==="score"?C.white:C.muted,cursor:"pointer",fontSize:11,fontWeight:600}}>Best Score</button>
+              </div>
+              {sorted.length===0 ? (
+                <div style={{padding:30,textAlign:"center",color:C.muted,fontSize:12}}>No rounds played on this course yet.</div>
+              ) : (
+                <div style={{maxHeight:"60vh",overflowY:"auto"}}>
+                  {sorted.map((r,i)=>{
+                    const par=r.par||0;
+                    const diff=(r.total||0)-par;
+                    const hc=roundHoleCount(r);
+                    const rank = roundsSort==="score" ? i+1 : null;
+                    return (
+                      <div key={r.id} onClick={()=>{setRoundsForCourse(null);openRoundDetail&&openRoundDetail(r);}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 18px",borderBottom:`1px solid ${C.border}`,cursor:"pointer"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:10}}>
+                          {rank!=null && <span style={{fontSize:13,fontWeight:700,color:rank===1?C.gold:rank<=3?C.greenLt:C.muted,minWidth:20}}>#{rank}</span>}
+                          <div>
+                            <div style={{fontWeight:700,fontSize:13}}>{r.player}</div>
+                            <div style={{fontSize:10,color:C.muted}}>{r.date}{hc===9?" · 9H":""}{r.par3?" · P3":""}</div>
+                          </div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontWeight:700,fontSize:15}}>{r.total}</div>
+                          <div style={{fontSize:11,fontWeight:700,color:diff<0?C.red:diff>0?C.greenLt:C.muted}}>{diff===0?"E":diff>0?`+${diff}`:diff}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
