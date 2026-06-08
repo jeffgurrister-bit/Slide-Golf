@@ -79,7 +79,7 @@ export default function App(){
   const[shareMode,setShareMode]=useState(null); // null | "single" | "group"
   const[shareOverlay,setShareOverlay]=useState(false);
   const shareRef=useRef(null);
-  const[lbHoleFilter,setLbHoleFilter]=useState(18);const[statsMode,setStatsMode]=useState("all");
+  const[lbHoleFilter,setLbHoleFilter]=useState(18);const[statsMode,setStatsMode]=useState("all");const[lvlFilter,setLvlFilter]=useState("all");
 
   const allCourses=[...COURSES,...customCourses];
   const isLive=!!liveId&&!!liveData;
@@ -1403,10 +1403,11 @@ export default function App(){
   const playerNames=players.map(p=>p.name);
   const champFps=championshipFingerprints(leagueMatches);
   const modeMatch=r=>statsMode==="league"?isLeagueRound(r,champFps):statsMode==="regular"?!isLeagueRound(r,champFps):true;
+  const lvlMatch=r=>lvlFilter==="all"||r.courseLevel===lvlFilter;
   const computeStatsFor=(holeCount)=>playerNames.map(name=>{
     // Par-3 rounds are excluded from aggregate stats per design — they're
     // tracked separately and shouldn't drag down a player's handicap.
-    const pr=rounds.filter(r=>r.player===name&&roundHoleCount(r)===holeCount&&!r.par3&&modeMatch(r));
+    const pr=rounds.filter(r=>r.player===name&&roundHoleCount(r)===holeCount&&!r.par3&&modeMatch(r)&&lvlMatch(r));
     const unsealed=pr.filter(r=>!isRoundSealed(r,leagueMatches,me));
     const hcp=calcHandicap(unsealed);
     const best=unsealed.length?Math.min(...unsealed.map(r=>r.total)):null;
@@ -1479,8 +1480,8 @@ export default function App(){
         {tab==="league"&&<LeagueTab me={me} leagueView={leagueView} setLeagueView={setLeagueView} leagueRdFilter={leagueRdFilter} setLeagueRdFilter={setLeagueRdFilter} leagues={leagues} leagueMatches={leagueMatches} rounds={rounds} allCourses={allCourses} createLeague={createLeague} updateLeagueConfig={updateLeagueConfig} joinLeagueByCode={joinLeagueByCode} startLeagueSeason={startLeagueSeason} playLeagueMatch={playLeagueMatch} selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} openPlayerProfile={openPlayerProfile} renameLeague={renameLeague} swapWeekCourse={swapWeekCourse} setMatchCourse={setMatchCourse} resetMatch={resetMatch} forfeitMatch={forfeitMatch} setLeagueHandicap={setLeagueHandicap} extendMatchDeadline={extendMatchDeadline} replacePlayer={replacePlayer} addPlayerMidSeason={addPlayerMidSeason} removePlayerMidSeason={removePlayerMidSeason}/>}
         {tab==="courses"&&<CoursesTab allCourses={allCourses} creating={creating} setCreating={setCreating} startRound={startRound} deleteCourseFromDB={deleteCourseFromDB} handleGenerate={handleGenerate} addFamousCourse={addFamousCourse} ccName={ccName} setCcName={setCcName} ccLevel={ccLevel} setCcLevel={setCcLevel} ccTournament={ccTournament} setCcTournament={setCcTournament} ccHoles={ccHoles} setCcHolePar={setCcHolePar} setCcHoleRange={setCcHoleRange} ccNine={ccNine} setCcNine={setCcNine} saveCreatedCourse={saveCreatedCourse} resetCreator={resetCreator} courseRecords={courseRecords} rounds={rounds} leagueMatches={leagueMatches} me={me}/>}
         {tab==="play"&&<><LeagueMatchBadge/><PlayTab me={me} selCourse={selCourse} setSelCourse={setSelCourse} allCourses={allCourses} playMode={playMode} setPlayMode={setPlayMode} pgaThisWeek={pgaThisWeek} roundPlayers={roundPlayers} setRoundPlayers={setRoundPlayers} playerNames={playerNames} addToRound={addToRound} beginPlay={beginPlay} activeTourney={activeTourney} setActiveTourney={setActiveTourney} setShowTourney={setShowTourney} setTab={setTab} hideScores={hideScores} setHideScores={setHideScores} useHdcp={useHdcp} setUseHdcp={setUseHdcp} hdcps={hdcps} setHdcps={setHdcps} allScores={allScores} setAllScores={setAllScores} allShotLogs={allShotLogs} setAllShotLogs={setAllShotLogs} quickPutts={quickPutts} setQuickPutts={setQuickPutts} curHole={curHole} curPlayerIdx={curPlayerIdx} setCurPlayerIdx={setCurPlayerIdx} holeState={holeState} showScorecard={showScorecard} setShowScorecard={setShowScorecard} nine={nine} setNine={setNine} setQuickScore={setQuickScore} isLive={isLive} liveData={liveData} liveScoreMode={liveScoreMode} setLiveScoreMode={setLiveScoreMode} isSpectator={isSpectator} isKeeperHost={isKeeperHost} goLive={goLive} leaveLive={leaveLive} recordShot={recordShot} undoShot={undoShot} finishHole={finishHole} goToPrevHole={goToPrevHole} saveRound={saveRound} getRunningScore={getRunningScore} LiveBadge={LiveBadge} ScorecardView={ScorecardView} shareRef={shareRef} generateShareCard={generateShareCard} ScoreCell={ScoreCell} holeCount={holeCount} setHoleCount={setHoleCount} nineType={nineType} setNineType={setNineType} activeLeagueMatch={activeLeagueMatch}/></>}
-        {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
-        {tab==="stats"&&<StatsTab playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
+        {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode} lvlFilter={lvlFilter} setLvlFilter={setLvlFilter}/>}
+        {tab==="stats"&&<StatsTab playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode} lvlFilter={lvlFilter} setLvlFilter={setLvlFilter}/>}
       </div>
 
       {pendingGenCourse && (
@@ -1667,6 +1668,40 @@ export default function App(){
                 [avgPutts??"-","Avg Putts",C.blue]
               ].map(([v,l,c],i)=><div key={i} style={{textAlign:"center",padding:4}}><div style={{fontSize:16,fontWeight:700,color:c}}>{v}</div><div style={{fontSize:8,color:C.muted}}>{l}</div></div>)}
             </div>
+            {/* Per-round score type averages */}
+            {(()=>{
+              const profileRounds=rounds.filter(r=>r.player===profilePlayer&&!r.par3&&!isRoundSealed(r,leagueMatches,me)&&(r.scores||[]).length&&(r.courseHoles||[]).length);
+              if(!profileRounds.length)return null;
+              const totals={eaglePlus:0,birdie:0,par:0,bogey:0,double:0,triplePlus:0};
+              profileRounds.forEach(r=>{
+                (r.scores||[]).forEach((s,i)=>{
+                  if(s==null)return;const par=r.courseHoles?.[i]?.par;if(par==null)return;
+                  const d=s-par;
+                  if(d<=-2)totals.eaglePlus++;
+                  else if(d===-1)totals.birdie++;
+                  else if(d===0)totals.par++;
+                  else if(d===1)totals.bogey++;
+                  else if(d===2)totals.double++;
+                  else if(d>=3)totals.triplePlus++;
+                });
+              });
+              const rn=profileRounds.length;
+              const avg=k=>(Math.round(totals[k]/rn*10)/10).toFixed(1);
+              const cells=[["🦅","Eagle+",avg("eaglePlus"),C.gold],["🐦","Birdie",avg("birdie"),"#ef4444"],["👍","Par",avg("par"),C.text],["",`Bogey`,avg("bogey"),"#22c55e"],["",`Double`,avg("double"),"#16a34a"],["",`Triple+`,avg("triplePlus"),"#15803d"]];
+              return (
+                <div style={{padding:"12px 16px",borderBottom:`1px solid ${C.border}`}}>
+                  <div style={{fontWeight:700,fontSize:13,marginBottom:6}}>📊 Per-round avg <span style={{fontSize:9,fontWeight:400,color:C.muted}}>(over {rn} round{rn===1?"":"s"})</span></div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:4}}>
+                    {cells.map(([emoji,label,v,col],i)=>(
+                      <div key={i} style={{textAlign:"center",background:C.card,borderRadius:6,padding:"6px 2px",border:`1px solid ${C.border}`}}>
+                        <div style={{fontSize:14,fontWeight:700,color:col}}>{emoji?<span style={{fontSize:11}}>{emoji} </span>:null}{v}</div>
+                        <div style={{fontSize:8,color:C.muted}}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
             {/* Achievements */}
             <div style={{padding:"12px 16px"}}>
               <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>🏅 Achievements</div>

@@ -28,6 +28,16 @@ export function scoreName(s,p,isHoleOut=false){
   return{l:`+${d}`,c:"#15803d",e:""};
 }
 export function RelPar({s,p}){if(s==null)return null;const d=s-p;return<span style={{color:d<0?"#ef4444":d>0?"#22c55e":"#aaa",fontWeight:700,fontSize:12}}>{d===0?"E":d>0?`+${d}`:d}</span>;}
+export const DIFFICULTY_ORDER={Easy:0,Medium:1,Hard:2,Expert:3};
+export function relTime(ts){
+  if(!ts)return"";
+  const d=Math.floor((Date.now()-ts)/86400000);
+  if(d===0)return"today";
+  if(d===1)return"yesterday";
+  if(d<30)return`${d}d ago`;
+  if(d<365)return`${Math.floor(d/30)}mo ago`;
+  return`${Math.floor(d/365)}y ago`;
+}
 export function genLiveCode(){const ch="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";let c="";for(let i=0;i<4;i++)c+=ch[Math.floor(Math.random()*ch.length)];return c;}
 export function calcNeed(hs,hole){
   if(!hs||hs.onGreen||hs.done)return null;
