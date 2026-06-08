@@ -1,9 +1,10 @@
 import { C } from "../utils/theme.js";
 import { isRoundSealed, isLeagueRound, championshipFingerprints, roundHoleCount } from "../utils/helpers.jsx";
 
-export default function StatsTab({ playerStats, rounds, leagueMatches, me, openPlayerProfile, allCourses, lbHoleFilter, setLbHoleFilter, statsMode, setStatsMode }) {
+export default function StatsTab({ playerStats, rounds, leagueMatches, me, openPlayerProfile, allCourses, lbHoleFilter, setLbHoleFilter, statsMode, setStatsMode, lvlFilter, setLvlFilter }) {
   const champFps = championshipFingerprints(leagueMatches);
   const modeMatch = r => statsMode==="league" ? isLeagueRound(r, champFps) : statsMode==="regular" ? !isLeagueRound(r, champFps) : true;
+  const lvlMatch = r => lvlFilter==="all" || r.courseLevel===lvlFilter;
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
@@ -13,13 +14,18 @@ export default function StatsTab({ playerStats, rounds, leagueMatches, me, openP
           <button onClick={()=>setLbHoleFilter(9)} style={{padding:"4px 12px",borderRadius:6,border:lbHoleFilter===9?`2px solid ${C.greenLt}`:`1px solid ${C.border}`,background:lbHoleFilter===9?C.accent:"transparent",color:lbHoleFilter===9?C.white:C.muted,cursor:"pointer",fontSize:11,fontWeight:600}}>9H</button>
         </div>
       </div>
-      <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+      <div style={{display:"flex",gap:4,justifyContent:"flex-end",flexWrap:"wrap"}}>
         {[["all","All"],["regular","Regular"],["league","League"]].map(([v,l])=>(
           <button key={v} onClick={()=>setStatsMode(v)} style={{padding:"3px 10px",borderRadius:6,border:statsMode===v?`2px solid ${C.gold}`:`1px solid ${C.border}`,background:statsMode===v?"rgba(212,184,74,0.15)":"transparent",color:statsMode===v?C.gold:C.muted,cursor:"pointer",fontSize:10,fontWeight:600}}>{l}</button>
         ))}
       </div>
-      {playerStats.map(p=>{const pr=rounds.filter(r=>r.player===p.name&&roundHoleCount(r)===lbHoleFilter&&!isRoundSealed(r,leagueMatches,me)&&modeMatch(r));if(!pr.length)return null;const courseCounts={};pr.forEach(r=>{courseCounts[r.course]=(courseCounts[r.course]||0)+1;});
-        const puttsRounds = rounds.filter(r => r.player === p.name && r.totalPutts != null && roundHoleCount(r)===lbHoleFilter && !isRoundSealed(r, leagueMatches, me) && modeMatch(r));
+      <div style={{display:"flex",gap:4,justifyContent:"flex-end",flexWrap:"wrap"}}>
+        {[["all","All"],["Easy","Easy"],["Medium","Medium"],["Hard","Hard"],["Expert","Expert"]].map(([v,l])=>{const col=v==="Easy"?"#22c55e":v==="Medium"?"#3b82f6":v==="Hard"?"#f59e0b":v==="Expert"?"#ef4444":C.greenLt;return (
+          <button key={v} onClick={()=>setLvlFilter(v)} style={{padding:"3px 10px",borderRadius:6,border:lvlFilter===v?`2px solid ${col}`:`1px solid ${C.border}`,background:lvlFilter===v?"rgba(74,170,74,0.08)":"transparent",color:lvlFilter===v?col:C.muted,cursor:"pointer",fontSize:10,fontWeight:600}}>{l}</button>
+        );})}
+      </div>
+      {playerStats.map(p=>{const pr=rounds.filter(r=>r.player===p.name&&roundHoleCount(r)===lbHoleFilter&&!isRoundSealed(r,leagueMatches,me)&&modeMatch(r)&&lvlMatch(r));if(!pr.length)return null;const courseCounts={};pr.forEach(r=>{courseCounts[r.course]=(courseCounts[r.course]||0)+1;});
+        const puttsRounds = rounds.filter(r => r.player === p.name && r.totalPutts != null && roundHoleCount(r)===lbHoleFilter && !isRoundSealed(r, leagueMatches, me) && modeMatch(r) && lvlMatch(r));
         const avgPutts = puttsRounds.length ? Math.round(puttsRounds.reduce((s, r) => s + r.totalPutts, 0) / puttsRounds.length * 10) / 10 : null;
 
         return <div key={p.name} style={{background:C.card,borderRadius:12,padding:14,border:`1px solid ${C.border}`}}>

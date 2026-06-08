@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { C, btnS, inputS, smallInput } from "../utils/theme.js";
-import { calcPar, fmtRange, fmtR, computeCourseStats, calcHandicap, roundHoleCount, isRoundSealed } from "../utils/helpers.jsx";
+import { calcPar, fmtRange, fmtR, computeCourseStats, calcHandicap, roundHoleCount, isRoundSealed, DIFFICULTY_ORDER, relTime } from "../utils/helpers.jsx";
 import { FAMOUS_COURSES } from "../data/famousCourses.js";
 
 // Favorites are stored per-player in localStorage. Cheap and private — no
@@ -37,10 +37,15 @@ export default function CoursesTab({
     if (filter === "favorites") return isFav(c.name);
     return c.level === filter;
   }).sort((a, b) => {
-    // Favorites first within whatever filter is active.
+    // Favorites first within whatever filter is active, then by difficulty
+    // (Easy → Medium → Hard → Expert), then alphabetical.
     const af = isFav(a.name) ? 0 : 1;
     const bf = isFav(b.name) ? 0 : 1;
-    return af - bf;
+    if (af !== bf) return af - bf;
+    const da = DIFFICULTY_ORDER[a.level] ?? 99;
+    const db = DIFFICULTY_ORDER[b.level] ?? 99;
+    if (da !== db) return da - db;
+    return a.name.localeCompare(b.name);
   });
   if (creating) return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -112,7 +117,7 @@ export default function CoursesTab({
         ))}
       </div>
       {filtered.length===0 && <div style={{textAlign:"center",padding:30,color:C.muted,fontSize:12,background:C.card,borderRadius:12,border:`1px solid ${C.border}`}}>{filter==="favorites"?"No favorites yet — tap the ☆ on a course to add one":"No courses match this filter"}</div>}
-      {filtered.map(c=>{const tp=c.holes.reduce((s,h)=>s+h.par,0);const rec=courseRecords?.[c.name];const open=statsOpen[c.name];const stats=open?computeCourseStats(c.name,rounds,leagueMatches,me):null;const fav=isFav(c.name);return<div key={c.id} style={{background:C.card,borderRadius:12,border:`1px solid ${fav?C.gold:C.border}`,overflow:"hidden"}}><div style={{background:C.headerBg,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}><button onClick={(e)=>{e.stopPropagation();toggleFav(c.name);}} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,color:fav?C.gold:C.muted,padding:0,lineHeight:1}} title={fav?"Remove from favorites":"Add to favorites"}>{fav?"★":"☆"}</button><div style={{minWidth:0}}><div style={{fontWeight:700,fontSize:14,textTransform:"uppercase",letterSpacing:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>{c.tournament&&<div style={{fontSize:10,color:C.blue}}>{c.tournament}</div>}</div></div><span style={{background:c.level==="Hard"?"#6a2222":c.level==="Medium"?"#5a4a1a":c.level==="Expert"?"#4a2a6a":C.green,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>{c.level}</span></div>
+      {filtered.map(c=>{const tp=c.holes.reduce((s,h)=>s+h.par,0);const rec=courseRecords?.[c.name];const open=statsOpen[c.name];const stats=open?computeCourseStats(c.name,rounds,leagueMatches,me):null;const fav=isFav(c.name);return<div key={c.id} style={{background:C.card,borderRadius:12,border:`1px solid ${fav?C.gold:C.border}`,overflow:"hidden"}}><div style={{background:C.headerBg,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}><button onClick={(e)=>{e.stopPropagation();toggleFav(c.name);}} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:18,color:fav?C.gold:C.muted,padding:0,lineHeight:1}} title={fav?"Remove from favorites":"Add to favorites"}>{fav?"★":"☆"}</button><div style={{minWidth:0}}><div style={{fontWeight:700,fontSize:14,textTransform:"uppercase",letterSpacing:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>{c.tournament&&<div style={{fontSize:10,color:C.blue}}>{c.tournament}</div>}{c.generated&&(c.createdBy||c.createdAt)&&<div style={{fontSize:9,color:C.muted}}>{[c.createdBy&&`by ${c.createdBy}`,c.createdAt&&relTime(c.createdAt)].filter(Boolean).join(" · ")}</div>}</div></div><span style={{background:c.level==="Hard"?"#6a2222":c.level==="Medium"?"#5a4a1a":c.level==="Expert"?"#4a2a6a":C.green,padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>{c.level}</span></div>
         {rec && (
           <div style={{padding:"6px 14px",background:"rgba(212,184,74,0.06)",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11}}>
             <span style={{color:C.gold}}>🏆 Course Record</span>
