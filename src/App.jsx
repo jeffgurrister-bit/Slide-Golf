@@ -316,7 +316,7 @@ export default function App(){
   async function addPlayerToDB(name){const n=name.trim();if(!n||players.some(p=>p.name===n))return;await addDoc(collection(db,"players"),{name:n,createdAt:Date.now()});}
   async function saveRoundToDB(rd){await addDoc(collection(db,"rounds"),{...rd,createdAt:Date.now()});}
   async function deleteRoundFromDB(id){await deleteDoc(doc(db,"rounds",id));}
-  async function saveCoursetoDB(course){return(await addDoc(collection(db,"customCourses"),{name:course.name,level:course.level,holes:course.holes,tournament:course.tournament||"",createdAt:Date.now()})).id;}
+  async function saveCoursetoDB(course){return(await addDoc(collection(db,"customCourses"),{name:course.name,level:course.level,holes:course.holes,tournament:course.tournament||"",createdAt:Date.now(),createdBy:me||""})).id;}
   async function deleteCourseFromDB(id){await deleteDoc(doc(db,"customCourses",id));}
   // ─── NOTIFICATIONS ─────────────────────────────────────
   async function writeNotification(recipient, type, payload) {
@@ -777,7 +777,32 @@ export default function App(){
   function setCcHolePar(idx,par){setCcHoles(prev=>{const n=[...prev];n[idx]={...n[idx],par};return n;});}
   function setCcHoleRange(idx,field,val){const v=parseInt(val)||0;setCcHoles(prev=>{const n=[...prev];n[idx]={...n[idx],[field]:Math.max(1,Math.min(30,v))};return n;});}
   async function saveCreatedCourse(){if(!ccName.trim())return;const holes=ccHoles.map(h=>({num:h.num,par:h.par,range:[h.rangeMin,Math.max(h.rangeMin,h.rangeMax)]}));await saveCoursetoDB({name:ccName.trim(),level:ccLevel,holes,tournament:ccTournament.trim()});setCreating(false);resetCreator();}
-  async function handleGenerate(diff){const en=[...allCourses.map(c=>c.name),...PGA_2026.map(c=>c.name)];const course=generateCourse(diff,en);const id=await saveCoursetoDB(course);setSelCourse({...course,id,generated:true});setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");}
+  // Course-generator preview state: generated course held here so the user
+  // can rename it (or regenerate) before it's written to Firestore.
+  const[pendingGenCourse,setPendingGenCourse]=useState(null);
+  const[pendingGenName,setPendingGenName]=useState("");
+  function handleGenerate(diff){
+    const en=[...allCourses.map(c=>c.name),...PGA_2026.map(c=>c.name)];
+    const course=generateCourse(diff,en);
+    setPendingGenCourse(course);
+    setPendingGenName(course.name);
+  }
+  async function confirmGeneratedCourse(){
+    if(!pendingGenCourse)return;
+    const finalName=(pendingGenName||"").trim()||pendingGenCourse.name;
+    const finalCourse={...pendingGenCourse,name:finalName};
+    const id=await saveCoursetoDB(finalCourse);
+    setPendingGenCourse(null);setPendingGenName("");
+    setSelCourse({...finalCourse,id,generated:true});
+    setRoundPlayers([]);setAllScores({});setAllShotLogs({});setPlayMode("setup");
+    setCurHole(0);setCurPlayerIdx(0);setHideScores(false);setTab("play");
+  }
+  function regeneratePendingCourse(){
+    if(!pendingGenCourse)return;
+    const en=[...allCourses.map(c=>c.name),...PGA_2026.map(c=>c.name)];
+    const next=generateCourse(pendingGenCourse.level,en);
+    setPendingGenCourse(next);setPendingGenName(next.name);
+  }
   // Add a hand-curated famous course to the user's library. Idempotent —
   // if the course is already there (by name), bail.
   async function addFamousCourse(course) {
@@ -1408,7 +1433,7 @@ export default function App(){
   const LeagueMatchBadge=()=>activeLeagueMatch?<div style={{background:activeLeagueMatch.isChampionship?"rgba(212,184,74,0.15)":"rgba(74,170,74,0.15)",border:`1px solid ${activeLeagueMatch.isChampionship?"rgba(212,184,74,0.4)":"rgba(74,170,74,0.4)"}`,borderRadius:8,padding:"6px 10px",textAlign:"center"}}><span style={{fontSize:12,fontWeight:700,color:activeLeagueMatch.isChampionship?C.gold:C.greenLt}}>{activeLeagueMatch.isChampionship?"🏆 CHAMPIONSHIP ROUND":"⚡ League Match"}</span></div>:null;
 
   const scNines=holeCount===9?(nineType==="back"?[9]:[0]):[0,9];
-  const ScorecardView=()=>(<div style={{background:C.card,borderRadius:12,border:`1px solid ${C.greenLt}`,overflow:"hidden"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:C.accent}}><span style={{fontWeight:700,fontSize:13}}>📋 Scorecard</span><button onClick={()=>setShowScorecard(false)} style={{background:"transparent",border:"none",color:C.text,cursor:"pointer",fontSize:14}}>✕</button></div><div style={{overflowX:"auto",padding:6}}>{scNines.map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:9,marginBottom:scNines.length>1&&start===0?4:0,minWidth:420}}><thead><tr style={{background:C.accent}}><th style={{padding:"3px 4px",textAlign:"left",minWidth:40}}>HOLE</th>{selCourse.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"3px 1px",textAlign:"center",minWidth:24,background:h.num-1===curHole?"rgba(74,170,74,0.3)":"transparent"}}>{h.num}</th>)}<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>{start===0?"OUT":"IN"}</th>{start===9&&holeCount===18&&<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>TOT</th>}</tr></thead><tbody><tr style={{background:C.card2}}><td style={{padding:"2px 4px",fontWeight:600,color:C.greenLt,fontSize:8}}>RNG</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,start,start+9)}</td>{start===9&&holeCount===18&&<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,0,18)}</td>}</tr>{selCourse.holes.some(h=>h.mustHit)&&<tr style={{background:"rgba(138,90,204,0.12)"}}><td style={{padding:"2px 4px",fontWeight:700,color:"#c79aff",fontSize:8}}>MUST</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:8,color:"#c79aff",fontWeight:700}}>{h.mustHit||"—"}</td>)}<td/>{start===9&&holeCount===18&&<td/>}</tr>}<tr><td style={{padding:"2px 4px",fontWeight:600,fontSize:9}}>PAR</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",padding:"2px 1px"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,start,start+9)}</td>{start===9&&holeCount===18&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{selCourse.holes.reduce((s,h)=>s+h.par,0)}</td>}</tr>{roundPlayers.filter(p=>!hideScores||p===me).map(p=>{const sc=allScores[p]||Array(18).fill(null);return(<tr key={p} style={{borderTop:`1px solid ${C.border}`}}><td style={{padding:"2px 4px",fontWeight:600,fontSize:8}}>{p}{isLive&&p!==me?<span style={{color:C.blue,fontSize:7}}> 📡</span>:""}</td>{selCourse.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const v=sc[idx];return<td key={h.num} style={{textAlign:"center",fontSize:9,fontWeight:700,color:v===1?"#ff6b00":v!==null&&v<h.par?C.greenLt:v!==null&&v>h.par?"#ff6b6b":v!==null?C.text:C.muted,background:h.num-1===curHole?"rgba(74,170,74,0.1)":"transparent"}}>{v??"-"}</td>;})}<td style={{textAlign:"center",fontWeight:700,fontSize:9}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>{start===9&&holeCount===18&&<td style={{textAlign:"center",fontWeight:700,fontSize:9,color:C.greenLt}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}</tr>);})}</tbody></table>))}</div></div>);
+  const ScorecardView=()=>(<div style={{background:C.card,borderRadius:12,border:`1px solid ${C.greenLt}`,overflow:"hidden"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:C.accent}}><span style={{fontWeight:700,fontSize:13}}>📋 Scorecard</span><button onClick={()=>setShowScorecard(false)} style={{background:"transparent",border:"none",color:C.text,cursor:"pointer",fontSize:14}}>✕</button></div><div style={{overflowX:"auto",padding:6}}>{scNines.map(start=>(<table key={start} style={{width:"100%",borderCollapse:"collapse",fontSize:9,marginBottom:scNines.length>1&&start===0?4:0,minWidth:420}}><thead><tr style={{background:C.accent}}><th style={{padding:"3px 4px",textAlign:"left",minWidth:40}}>HOLE</th>{selCourse.holes.slice(start,start+9).map(h=><th key={h.num} style={{padding:"3px 1px",textAlign:"center",minWidth:24,background:h.num-1===curHole?"rgba(74,170,74,0.3)":"transparent"}}>{h.num}</th>)}<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>{start===0?"OUT":"IN"}</th>{start===9&&holeCount===18&&<th style={{padding:"3px 3px",textAlign:"center",minWidth:30}}>TOT</th>}</tr></thead><tbody><tr style={{background:C.card2}}><td style={{padding:"2px 4px",fontWeight:600,color:C.greenLt,fontSize:8}}>RNG</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtR(h.range)}</td>)}<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,start,start+9)}</td>{start===9&&holeCount===18&&<td style={{textAlign:"center",fontSize:7,color:C.muted}}>{fmtRange(selCourse.holes,0,18)}</td>}</tr>{selCourse.holes.some(h=>h.mustHit)&&<tr style={{background:"rgba(138,90,204,0.12)"}}><td style={{padding:"2px 4px",fontWeight:700,color:"#c79aff",fontSize:8}}>MUST</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",fontSize:8,color:"#c79aff",fontWeight:700}}>{h.mustHit||"—"}</td>)}<td/>{start===9&&holeCount===18&&<td/>}</tr>}<tr><td style={{padding:"2px 4px",fontWeight:600,fontSize:9}}>PAR</td>{selCourse.holes.slice(start,start+9).map(h=><td key={h.num} style={{textAlign:"center",padding:"2px 1px"}}>{h.par}</td>)}<td style={{textAlign:"center",fontWeight:700}}>{calcPar(selCourse.holes,start,start+9)}</td>{start===9&&holeCount===18&&<td style={{textAlign:"center",fontWeight:700,color:C.greenLt}}>{selCourse.holes.reduce((s,h)=>s+h.par,0)}</td>}</tr>{roundPlayers.filter(p=>!hideScores||p===me).map(p=>{const sc=allScores[p]||Array(18).fill(null);return(<tr key={p} style={{borderTop:`1px solid ${C.border}`}}><td style={{padding:"2px 4px",fontWeight:600,fontSize:8}}>{p}{isLive&&p!==me?<span style={{color:C.blue,fontSize:7}}> 📡</span>:""}</td>{selCourse.holes.slice(start,start+9).map((h,i)=>{const idx=start+i;const v=sc[idx];return<td key={h.num} style={{textAlign:"center",fontSize:9,fontWeight:700,color:v===1?"#ff6b00":v!==null&&v<h.par?C.red:v!==null&&v>h.par?C.greenLt:v!==null?C.text:C.muted,background:h.num-1===curHole?"rgba(74,170,74,0.1)":"transparent"}}>{v??"-"}</td>;})}<td style={{textAlign:"center",fontWeight:700,fontSize:9}}>{sc.slice(start,start+9).reduce((s,v)=>s+(v||0),0)||"-"}</td>{start===9&&holeCount===18&&<td style={{textAlign:"center",fontWeight:700,fontSize:9,color:C.greenLt}}>{sc.reduce((s,v)=>s+(v||0),0)||"-"}</td>}</tr>);})}</tbody></table>))}</div></div>);
 
   // ─── SCORE CELL HELPER (for detail overlay & share card) ───
   function ScoreCell({score, par, size=24, fontSize=12}) {
@@ -1457,6 +1482,40 @@ export default function App(){
         {tab==="leaderboard"&&<LeaderboardTab me={me} playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} deleteRoundFromDB={deleteRoundFromDB} leagueMatches={leagueMatches} openRoundDetail={openRoundDetail} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
         {tab==="stats"&&<StatsTab playerStats={lbHoleFilter===9?playerStats9:playerStats} rounds={rounds} leagueMatches={leagueMatches} me={me} openPlayerProfile={openPlayerProfile} allCourses={allCourses} lbHoleFilter={lbHoleFilter} setLbHoleFilter={setLbHoleFilter} statsMode={statsMode} setStatsMode={setStatsMode}/>}
       </div>
+
+      {pendingGenCourse && (
+        <div onClick={(e)=>{if(e.target===e.currentTarget){setPendingGenCourse(null);setPendingGenName("");}}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div onClick={(e)=>e.stopPropagation()} style={{background:C.bg,borderRadius:14,border:`1px solid ${C.greenLt}`,maxWidth:460,width:"100%",padding:20,maxHeight:"90vh",overflowY:"auto"}}>
+            <div style={{textAlign:"center",marginBottom:14}}>
+              <div style={{fontSize:30,marginBottom:4}}>🎲</div>
+              <div style={{fontWeight:700,fontSize:18}}>New {pendingGenCourse.level} Course</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:4}}>Par {pendingGenCourse.holes.reduce((s,h)=>s+h.par,0)} · 18 holes</div>
+            </div>
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Course name</div>
+              <input value={pendingGenName} onChange={e=>setPendingGenName(e.target.value)} style={{...inputS,width:"100%",fontSize:15,fontWeight:600}}/>
+            </div>
+            <div style={{background:C.card,borderRadius:8,padding:10,marginBottom:14,maxHeight:240,overflowY:"auto",fontSize:11}}>
+              {[0,9].map(start=>(
+                <div key={start} style={{marginBottom:start===0?8:0}}>
+                  <div style={{fontSize:10,color:C.muted,fontWeight:700,marginBottom:4}}>{start===0?"FRONT 9":"BACK 9"}</div>
+                  {pendingGenCourse.holes.slice(start,start+9).map(h=>(
+                    <div key={h.num} style={{display:"flex",justifyContent:"space-between",padding:"2px 0",borderBottom:`1px solid ${C.border}`}}>
+                      <span>#{h.num} · Par {h.par}</span>
+                      <span style={{color:C.greenLt}}>{fmtR(h.range)}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{setPendingGenCourse(null);setPendingGenName("");}} style={{...btnS(false),padding:12,fontSize:12}}>Cancel</button>
+              <button onClick={regeneratePendingCourse} style={{...btnS(false),flex:1,padding:12,fontSize:13}}>🎲 Regenerate</button>
+              <button onClick={confirmGeneratedCourse} style={{...btnS(true),flex:1.5,padding:12,fontSize:14}}>Save & Play →</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {draftPrompt && (
         <div onClick={(e)=>{if(e.target===e.currentTarget)discardDraft();}} style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>

@@ -117,7 +117,7 @@ export default function RoundDetailOverlay({
               return <div key={hIdx} style={{marginBottom:8,padding:8,background:C.card,borderRadius:8,border:`1px solid ${C.border}`}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
                   <span style={{fontWeight:700,fontSize:11}}>Hole {hIdx+1+dOffset} {par!=null&&<span style={{color:C.muted,fontWeight:400}}>· Par {par}{range?` · ${fmtR(range)}`:""}</span>}</span>
-                  {score!=null && <span style={{fontWeight:700,fontSize:12,color:par!=null&&score<par?C.greenLt:par!=null&&score>par?C.red:C.text}}>{score}</span>}
+                  {score!=null && <span style={{fontWeight:700,fontSize:12,color:par!=null&&score<par?C.red:par!=null&&score>par?C.greenLt:C.text}}>{score}</span>}
                 </div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                   {holeLogs.map((shot,sIdx)=>{
